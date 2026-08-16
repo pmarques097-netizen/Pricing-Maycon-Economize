@@ -7062,7 +7062,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
         return df_pesquisa
 
 
-VERSAO_APP = "Enterprise v1.4.42"
+VERSAO_APP = "Enterprise v1.4.43"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -18647,6 +18647,122 @@ def eirox_v63_tabela_subidas(base):
                         except Exception:
                             pass
     except Exception:
+        pass
+
+    # V1.4.43 — RESTAURAÇÃO DA CORREÇÃO ESTÁVEL DA LISTA DE PRICING.
+    # Atua SOMENTE no dataframe final da tela/exportação, depois que a
+    # classificação e a quantidade de ações já foram definidas.
+    # Não filtra, não reclassifica e não altera Subir/Baixar/Negociar.
+    try:
+        def _v143_num(v):
+            try:
+                if v is None or (isinstance(v, float) and np.isnan(v)):
+                    return np.nan
+                if isinstance(v, (int, float, np.number)):
+                    return float(v)
+                t = str(v).strip()
+                if not t or t.lower() in {"none", "nan", "nat", "r$ nan"}:
+                    return np.nan
+                t = t.replace("R$", "").replace("%", "").strip()
+                # Valores do projeto podem chegar tanto em padrão BR quanto US.
+                if "," in t:
+                    t = t.replace(".", "").replace(",", ".")
+                return float(t)
+            except Exception:
+                return np.nan
+
+        def _v143_vazio(v):
+            if v is None:
+                return True
+            try:
+                if pd.isna(v):
+                    return True
+            except Exception:
+                pass
+            return str(v).strip().lower() in {"", "none", "nan", "nat", "r$ nan"}
+
+        # Mantém alinhamento 1:1 entre motor e out pela ordem após o sort.
+        _m = motor.reset_index(drop=True).copy()
+        _o = out.reset_index(drop=True).copy()
+
+        def _first_num_row(row, nomes):
+            for nome in nomes:
+                if nome in _m.columns:
+                    x = _v143_num(row.get(nome))
+                    if pd.notna(x) and x > 0:
+                        return x
+            return np.nan
+
+        for i in range(min(len(_o), len(_m))):
+            row = _m.iloc[i]
+
+            # Preço sugerido: é a referência competitiva já utilizada pelo motor.
+            ps = _v143_num(_o.at[i, "Preço Sugerido"]) if "Preço Sugerido" in _o.columns else np.nan
+            if pd.isna(ps) or ps <= 0:
+                ps = _first_num_row(row, [
+                    "Preço_Sugerido_Eirox", "Preco_Sugerido_Mercado",
+                    "Preço Sugerido Mercado", "Preço_Mercado_Eirox",
+                    "Preco_Maximo_Competitivo", "Preço Máximo Competitivo"
+                ])
+                if (pd.isna(ps) or ps <= 0) and "Preço Mercado" in _o.columns:
+                    ps = _v143_num(_o.at[i, "Preço Mercado"])
+                if pd.notna(ps) and ps > 0 and "Preço Sugerido" in _o.columns:
+                    _o.at[i, "Preço Sugerido"] = _eirox_moeda_num(ps)
+
+            # Preço atual: primeiro da fonte/motor; depois identidade já calculada
+            # Preço Sugerido - Aumento Unitário.
+            pa = _v143_num(_o.at[i, "Preço Atual"]) if "Preço Atual" in _o.columns else np.nan
+            if pd.isna(pa) or pa <= 0:
+                pa = _first_num_row(row, [
+                    "Preço_Atual_Eirox", "Preco_Atual_Venda", "Preço_Atual_Venda",
+                    "Preco_Atual", "Preço_Atual", "Preço Atual", "Preco Atual",
+                    "Preço Principal", "Preco Principal"
+                ])
+            if (pd.isna(pa) or pa <= 0) and pd.notna(ps) and ps > 0 and "Aumento Unitário" in _o.columns:
+                au = _v143_num(_o.at[i, "Aumento Unitário"])
+                if pd.notna(au) and au >= 0 and ps > au:
+                    pa = ps - au
+            if pd.notna(pa) and pa > 0 and "Preço Atual" in _o.columns:
+                _o.at[i, "Preço Atual"] = _eirox_moeda_num(pa)
+
+            # Menor preço concorrente: recupera o valor já existente na mesma
+            # linha do motor/base, sem confundir com preço máximo/mercado.
+            mp = _v143_num(_o.at[i, "Menor Preço Concorrente"]) if "Menor Preço Concorrente" in _o.columns else np.nan
+            if pd.isna(mp) or mp <= 0:
+                mp = _first_num_row(row, [
+                    "Menor Preço Concorrente", "Menor_Preco_Concorrente",
+                    "Menor_Preco", "Menor Preço", "Menor_Preco_Encontrado"
+                ])
+            if pd.notna(mp) and mp > 0 and "Menor Preço Concorrente" in _o.columns:
+                _o.at[i, "Menor Preço Concorrente"] = _eirox_moeda_num(mp)
+
+            # Custo unitário: fonte direta; se ela não chegou à camada final,
+            # reconstrói exclusivamente pela identidade da Margem Atual:
+            # margem = (preço - custo) / preço.
+            cu = _v143_num(_o.at[i, "Custo Unitário"]) if "Custo Unitário" in _o.columns else np.nan
+            if pd.isna(cu) or cu <= 0:
+                cu = _first_num_row(row, [
+                    "Custo_Unitario_Eirox", "Custo", "Custo_Unitario",
+                    "Custo Unitário", "Custo Unitario", "Custo_Estoque_Unitario",
+                    "Custo_Estoque", "Custo Atual"
+                ])
+            if (pd.isna(cu) or cu <= 0) and pd.notna(pa) and pa > 0 and "Margem Atual" in _o.columns:
+                mg = _v143_num(_o.at[i, "Margem Atual"])
+                if pd.notna(mg):
+                    # _eirox_pct_num normalmente grava 30,9% para 0.309.
+                    if mg > 1:
+                        mg = mg / 100.0
+                    if -1 < mg < 1:
+                        calc_custo = pa * (1.0 - mg)
+                        if calc_custo > 0:
+                            cu = calc_custo
+            if pd.notna(cu) and cu > 0 and "Custo Unitário" in _o.columns:
+                _o.at[i, "Custo Unitário"] = _eirox_moeda_num(cu)
+
+        out = _o
+    except Exception:
+        # A correção é apenas de apresentação/enriquecimento; em nenhuma hipótese
+        # pode derrubar ou reclassificar a lista já calculada.
         pass
 
     return out
