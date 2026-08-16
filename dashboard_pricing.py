@@ -16754,6 +16754,84 @@ def eirox_v135_corrigir_financeiro_subir_preco(df):
     return d
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def eirox_mapa_data_pesquisa_bruta_cacheado(assinatura_historico):
+    """Mapa EAN -> última Data Emissão diretamente dos arquivos de VENDA_TESTE.
+
+    Fallback de produção independente do DataFrame historico transformado.
+    Garante a Data da Pesquisa no Streamlit Cloud sem interferir no heatmap.
+    """
+    mapa = {}
+    try:
+        base_dir = Path(__file__).resolve().parent
+        pasta = base_dir / "VENDA_TESTE"
+        if not pasta.exists():
+            return mapa
+
+        arquivos = []
+        for padrao in ("*.xlsx", "*.xls", "*.xlsm", "*.csv"):
+            arquivos.extend(pasta.glob(padrao))
+
+        for arquivo in sorted(set(arquivos), key=lambda x: x.name.lower()):
+            try:
+                suf = arquivo.suffix.lower()
+                if suf == ".csv":
+                    try:
+                        temp = pd.read_csv(arquivo, sep=None, engine="python", encoding="utf-8-sig")
+                    except Exception:
+                        temp = pd.read_csv(arquivo, sep=None, engine="python", encoding="latin1")
+                elif suf == ".xls":
+                    temp = pd.read_excel(arquivo, engine="xlrd")
+                else:
+                    temp = pd.read_excel(arquivo, engine="openpyxl")
+                if not isinstance(temp, pd.DataFrame) or temp.empty:
+                    continue
+                temp.columns = temp.columns.astype(str).str.strip()
+                c_ean = next((c for c in ["EAN", "EAN (GTIN)", "GTIN"] if c in temp.columns), None)
+                c_data = next((c for c in ["Data Emissão", "Data Emissao", "Data da Pesquisa", "Data Pesquisa", "Data"] if c in temp.columns), None)
+                if not c_ean:
+                    continue
+
+                eans = (temp[c_ean].astype(str)
+                        .str.replace(".0", "", regex=False)
+                        .str.replace(r"\D", "", regex=True)
+                        .str.strip())
+
+                if c_data:
+                    vals = temp[c_data].fillna("").astype(str).str.strip()
+                    vals = vals.str.replace(
+                        r"\s+(AMT|AMST|BRT|BRST|GMT(?:[+-]\d+)?|UTC(?:[+-]\d+)?)\s+",
+                        " ", regex=True, flags=re.IGNORECASE
+                    )
+                    try:
+                        dts = pd.to_datetime(vals, errors="coerce", dayfirst=True, format="mixed")
+                    except Exception:
+                        dts = pd.to_datetime(vals, errors="coerce", dayfirst=True)
+                else:
+                    dts = pd.Series(pd.NaT, index=temp.index)
+
+                # Fallback pelo nome Pesquisa_YYYYMMDD_HHMMSS.xlsx quando a célula não trouxer data.
+                m = re.search(r"Pesquisa[_ -]?(\d{8})", arquivo.stem, flags=re.IGNORECASE)
+                dt_nome = pd.to_datetime(m.group(1), format="%Y%m%d", errors="coerce") if m else pd.NaT
+
+                for i, ean in eans.items():
+                    if not ean:
+                        continue
+                    dt = dts.loc[i] if i in dts.index else pd.NaT
+                    if pd.isna(dt):
+                        dt = dt_nome
+                    if pd.isna(dt):
+                        continue
+                    anterior = mapa.get(ean)
+                    if anterior is None or dt > anterior:
+                        mapa[ean] = dt
+            except Exception:
+                continue
+    except Exception:
+        return {}
+    return mapa
+
+
 def eirox_v142_data_final_unica(df, historico_base=None):
     """Fonte única de Data da Pesquisa para tela, CSV e Excel."""
     if not isinstance(df, pd.DataFrame):
@@ -16816,6 +16894,26 @@ def eirox_v142_data_final_unica(df, historico_base=None):
     except Exception:
         pass
 
+    # Fallback final de produção: consulta diretamente VENDA_TESTE.
+    # Não depende do histórico já transformado/cacheado e por isso funciona no Cloud.
+    try:
+        mapa_bruto = eirox_mapa_data_pesquisa_bruta_cacheado(
+            assinatura_pasta("VENDA_TESTE")
+        )
+        c_ean_o = next((c for c in ["EAN", "EAN (GTIN)", "GTIN"] if c in out.columns), None)
+        if c_ean_o and mapa_bruto:
+            eans = (out[c_ean_o].astype(str)
+                    .str.replace(".0", "", regex=False)
+                    .str.replace(r"\D", "", regex=True)
+                    .str.strip())
+            for idx in out.index:
+                if not _ok(out.at[idx, "Data da Pesquisa"]):
+                    dt = mapa_bruto.get(eans.loc[idx])
+                    if dt is not None and not pd.isna(dt):
+                        out.at[idx, "Data da Pesquisa"] = dt.strftime("%d/%m/%Y")
+    except Exception:
+        pass
+
     def _fmt(v):
         if not _ok(v):
             return "Sem data na fonte"
@@ -16830,6 +16928,10 @@ def eirox_v142_data_final_unica(df, historico_base=None):
             pass
         return s
     out["Data da Pesquisa"]=out["Data da Pesquisa"].apply(_fmt).astype(str)
+    # Mantém aliases usados por telas antigas e novas sincronizados.
+    for _alias_data in ["Data_Pesquisa", "Data Pesquisa"]:
+        if _alias_data in out.columns:
+            out[_alias_data] = out["Data da Pesquisa"]
     return out
 
 
@@ -28245,7 +28347,7 @@ explicacao_calculo(
     ]
 )
 
-# V1.4.37 — Streamlit Cloud: o mapa de calor deve usar a fonte bruta VENDA_TESTE.
+# V1.4.38 — Streamlit Cloud: o mapa de calor deve usar a fonte bruta VENDA_TESTE.
 # Em ambiente local o `historico` já costuma estar carregado, mas no Cloud algumas
 # transformações/filtros globais podem deixá-lo vazio ou sem Bairro/Marca.
 # Recarregamos somente para esta visualização, a partir da pasta publicada, sem
