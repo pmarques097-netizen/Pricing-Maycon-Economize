@@ -1,0 +1,15 @@
+VENDA_TESTE: 42 arquivo(s)
+  - Pesquisa_20260808_090611.xlsx
+  - Pesquisa_20260810_235426.xlsx
+  - Pesquisa_20260810_093449.xlsx
+  - Pesquisa_20260812_100914.xlsx
+  - Pesquisa_20260813_104828.xlsx
+  ... +37
+VENDA_FINAL_TESTE: 3 arquivo(s)
+  - 202505.xls
+  - 202506.xls
+  - 202504.xls
+COMPRA_TESTE: 1 arquivo(s)
+  - data - 2026-05-21T215459.927.xlsx
+ESTOQUE_TESTE: 1 arquivo(s)
+  - ESTOQUE.xls

@@ -15232,7 +15232,7 @@ def eirox_limpar_cache_persistente_antigo(limite=24):
 eirox_limpar_cache_persistente_antigo()
 
 # --------------------------------------------------
-# CACHE PERSISTENTE DE ENTRADA - V1.4.35
+# CACHE PERSISTENTE DE ENTRADA - V1.4.36
 # --------------------------------------------------
 def eirox_carregar_base_persistente(rotulo, assinatura, loader):
     """Evita reler Excel/CSV a cada nova sessão quando os arquivos não mudaram."""
@@ -28247,7 +28247,53 @@ explicacao_calculo(
     ]
 )
 
-base_heatmap = preparar_base_heatmap_1x40(historico, df_filtrado)
+# V1.4.36 — Streamlit Cloud: o mapa de calor deve usar a fonte bruta VENDA_TESTE.
+# Em ambiente local o `historico` já costuma estar carregado, mas no Cloud algumas
+# transformações/filtros globais podem deixá-lo vazio ou sem Bairro/Marca.
+# Recarregamos somente para esta visualização, a partir da pasta publicada, sem
+# alterar o DataFrame principal nem as regras de pricing.
+def _eirox_base_heatmap_streamlit(historico_atual, fallback_atual):
+    try:
+        base_atual = historico_atual if isinstance(historico_atual, pd.DataFrame) else pd.DataFrame()
+        col_bairro_atual = _coluna_disponivel_heatmap(base_atual, ["Bairro", "BAIRRO", "bairro"])
+        col_marca_atual = _coluna_disponivel_heatmap(base_atual, [
+            "Marca", "MARCA", "Laboratório", "Laboratorio",
+            "Fabricante", "Produto", "Termo Pesquisado"
+        ])
+        if not base_atual.empty and (col_bairro_atual or col_marca_atual):
+            return preparar_base_heatmap_1x40(base_atual, fallback_atual)
+
+        base_dir = Path(__file__).resolve().parent
+        pasta_venda = base_dir / "VENDA_TESTE"
+        partes = []
+        if pasta_venda.exists():
+            arquivos = []
+            for padrao in ("*.xlsx", "*.xls", "*.xlsm", "*.csv"):
+                arquivos.extend(pasta_venda.glob(padrao))
+            for arquivo in sorted(arquivos, key=lambda x: x.name.lower()):
+                try:
+                    if arquivo.suffix.lower() == ".csv":
+                        try:
+                            temp = pd.read_csv(arquivo, sep=None, engine="python", encoding="utf-8-sig")
+                        except Exception:
+                            temp = pd.read_csv(arquivo, sep=None, engine="python", encoding="latin1")
+                    elif arquivo.suffix.lower() == ".xls":
+                        temp = pd.read_excel(arquivo, engine="xlrd")
+                    else:
+                        temp = pd.read_excel(arquivo, engine="openpyxl")
+                    if isinstance(temp, pd.DataFrame) and not temp.empty:
+                        temp.columns = temp.columns.astype(str).str.strip()
+                        partes.append(temp)
+                except Exception:
+                    continue
+        if partes:
+            bruto = pd.concat(partes, ignore_index=True, sort=False)
+            return preparar_base_heatmap_1x40(bruto, fallback_atual)
+    except Exception:
+        pass
+    return preparar_base_heatmap_1x40(historico_atual, fallback_atual)
+
+base_heatmap = _eirox_base_heatmap_streamlit(historico, df_filtrado)
 
 # --------------------------------------------------
 # TOP 40 MARCAS - HEATMAP 1x40
