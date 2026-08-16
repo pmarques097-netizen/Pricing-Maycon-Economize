@@ -18793,6 +18793,18 @@ def eirox_v147_corrigir_lista_subir_final(tab):
         return tab
     out = tab.copy()
 
+    # V1.4.48 — Pandas 3 / Python 3.14 (Streamlit Cloud):
+    # as colunas abaixo recebem valores já formatados (strings BRL/data/texto).
+    # Convertemos explicitamente para object ANTES das atribuições .at para
+    # impedir TypeError de upcast em colunas inferidas como float64.
+    _cols_obj_v148 = [
+        "Preço Atual", "Preço Sugerido", "Menor Preço Concorrente",
+        "Custo Unitário", "Loja do Menor Preço", "Data da Pesquisa"
+    ]
+    for _c_v148 in _cols_obj_v148:
+        if _c_v148 in out.columns:
+            out[_c_v148] = out[_c_v148].astype("object")
+
     def _num(v):
         if v is None:
             return np.nan
