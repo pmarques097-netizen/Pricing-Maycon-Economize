@@ -1,0 +1,3 @@
+﻿FaturaID;EmpresaID;Cliente;Plano;Valor_Mensal;Data_Emissao;Data_Vencimento;Data_Pagamento;Status;Ciclo;Forma_Pagamento;Observacao;Criado_Em
+FAT-0001;1;Marabá - Cliente teste;Enterprise;2990;;; ;Em aberto;Mensal;;Fatura inicial de teste;
+FAT-0002;2;Belém - Cliente teste;Starter;490;;; ;Trial;Mensal;;Fatura inicial de teste;

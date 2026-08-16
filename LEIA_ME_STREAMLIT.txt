@@ -1,0 +1,12 @@
+EIROX PRICING - PACOTE LIMPO PARA STREAMLIT
+
+Arquivo principal (Main file path): dashboard_pricing.py
+
+Suba todo o conteúdo desta pasta para o repositório, preservando as pastas:
+.streamlit/
+VENDA_TESTE/
+VENDA_FINAL_TESTE/
+COMPRA_TESTE/
+ESTOQUE_TESTE/
+
+Não é necessário subir caches, __pycache__, backups, arquivos .bat, históricos de alterações ou relatórios antigos.

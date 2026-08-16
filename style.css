@@ -1,0 +1,416 @@
+
+/* EIROX CSS LIMPO */
+
+html, body, [data-testid="stAppViewContainer"] {
+    background: radial-gradient(circle at top left, rgba(44,160,255,0.15), transparent 32%),
+                linear-gradient(135deg, #050B14 0%, #07111F 45%, #0A1C34 100%) !important;
+    color: #F3F7FF !important;
+}
+
+[data-testid="stHeader"] {
+    background: rgba(5, 11, 20, 0.72) !important;
+    border-bottom: 1px solid rgba(120, 180, 255, 0.10);
+}
+
+.block-container {
+    max-width: 100% !important;
+    padding-top: 1.2rem !important;
+    padding-left: 1.4rem !important;
+    padding-right: 1.4rem !important;
+}
+
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0E2A4F 0%, #071A33 58%, #04101F 100%) !important;
+}
+
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3,
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] span {
+    color: #FFFFFF !important;
+}
+
+.sidebar-card {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 14px;
+    padding: 14px;
+    margin-bottom: 14px;
+}
+
+.sidebar-title {
+    font-size: 18px;
+    font-weight: 800;
+    color: #FFFFFF;
+}
+
+.sidebar-subtitle {
+    font-size: 12px;
+    color: #BFD7FF;
+}
+
+.sidebar-user {
+    font-size: 13px;
+    color: #FFFFFF;
+    margin: 2px 0px;
+}
+
+.sidebar-pill {
+    display: inline-block;
+    background: rgba(44,160,255,0.22);
+    border: 1px solid rgba(44,160,255,0.45);
+    color: #D8ECFF;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.sidebar-section {
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: #9FC7FF !important;
+    margin-top: 18px;
+    margin-bottom: 8px;
+}
+
+h1, h2, h3 {
+    color: #F6FAFF !important;
+}
+
+div[data-testid="stMetric"] {
+    background: linear-gradient(135deg, rgba(15,39,71,.98), rgba(8,20,38,.95));
+    border: 1px solid rgba(120,180,255,.18);
+    border-radius: 18px;
+    padding: 18px;
+}
+
+div[data-testid="stMetricValue"] {
+    color: #FFFFFF !important;
+    font-weight: 900;
+}
+
+div[data-testid="stDataFrame"] {
+    width: 100% !important;
+    border-radius: 18px !important;
+    overflow: hidden !important;
+}
+
+.eirox-card {
+    background: linear-gradient(135deg, rgba(15,39,71,.96), rgba(8,20,38,.94));
+    border: 1px solid rgba(120,180,255,.17);
+    border-radius: 18px;
+    padding: 18px;
+    margin-bottom: 16px;
+}
+
+.eirox-section-title {
+    font-size: 13px;
+    color: #9FD0FF;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    font-weight: 900;
+    margin-bottom: 8px;
+}
+
+.eirox-hero {
+    background: linear-gradient(135deg, rgba(15,39,71,.96), rgba(7,17,31,.96));
+    border: 1px solid rgba(120,180,255,.18);
+    border-radius: 22px;
+    padding: 22px 24px;
+    margin-bottom: 18px;
+}
+
+
+
+
+
+
+/* =========================================================
+   EIROX PRICING ENTERPRISE - VISUAL PREMIUM V1
+   ========================================================= */
+
+:root {
+    --eirox-bg: #050B14;
+    --eirox-text: #F6FAFF;
+    --eirox-muted: #BFD7FF;
+    --eirox-blue: #2CA0FF;
+    --eirox-green: #2ED47A;
+    --eirox-yellow: #FFB946;
+    --eirox-red: #FF5C7A;
+}
+
+html, body, [data-testid="stAppViewContainer"] {
+    background:
+        radial-gradient(circle at top left, rgba(44,160,255,.18), transparent 28%),
+        radial-gradient(circle at top right, rgba(46,212,122,.10), transparent 24%),
+        linear-gradient(135deg, #050B14 0%, #07111F 46%, #0A1C34 100%) !important;
+    color: var(--eirox-text) !important;
+}
+
+[data-testid="stHeader"] {
+    background: rgba(5,11,20,.72) !important;
+    backdrop-filter: blur(18px);
+    border-bottom: 1px solid rgba(120,180,255,.10);
+}
+
+.block-container {
+    max-width: 100% !important;
+    padding-top: 1.1rem !important;
+    padding-left: 1.35rem !important;
+    padding-right: 1.35rem !important;
+}
+
+section[data-testid="stSidebar"] {
+    background:
+        radial-gradient(circle at top, rgba(44,160,255,.30), transparent 31%),
+        linear-gradient(180deg, #0E2A4F 0%, #071A33 57%, #04101F 100%) !important;
+    border-right: 1px solid rgba(120,180,255,.18);
+    box-shadow: 9px 0 32px rgba(0,0,0,.30);
+}
+
+section[data-testid="stSidebar"] .block-container {
+    padding-top: 1.15rem !important;
+    padding-left: .95rem !important;
+    padding-right: .95rem !important;
+}
+
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3,
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] span {
+    color: #FFFFFF !important;
+}
+
+section[data-testid="stSidebar"] div[role="radiogroup"] label {
+    background: rgba(255,255,255,.065);
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 13px;
+    padding: 9px 10px;
+    margin-bottom: 7px;
+    transition: all .18s ease;
+}
+
+section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+    background: rgba(44,160,255,.18);
+    border-color: rgba(44,160,255,.42);
+    transform: translateX(3px);
+}
+
+h1, h2, h3 {
+    color: #F6FAFF !important;
+    letter-spacing: -.025em;
+}
+
+h1 {
+    font-weight: 950 !important;
+}
+
+h4, p, span, label {
+    color: #BFD7FF !important;
+}
+
+div[data-testid="stMetric"] {
+    background:
+        radial-gradient(circle at top right, rgba(44,160,255,.16), transparent 34%),
+        linear-gradient(135deg, rgba(15,39,71,.98), rgba(8,20,38,.95));
+    border: 1px solid rgba(120,180,255,.20);
+    border-radius: 20px;
+    padding: 19px 18px;
+    box-shadow: 0 18px 44px rgba(0,0,0,.30);
+    position: relative;
+    overflow: hidden;
+    min-height: 118px;
+}
+
+div[data-testid="stMetric"]::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    background: linear-gradient(90deg, #2CA0FF, #2ED47A);
+}
+
+div[data-testid="stMetric"]:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 24px 52px rgba(0,0,0,.36);
+    border-color: rgba(44,160,255,.42);
+}
+
+div[data-testid="stMetricLabel"] {
+    color: #AFC7E8 !important;
+    font-weight: 800 !important;
+}
+
+div[data-testid="stMetricValue"] {
+    color: #FFFFFF !important;
+    font-weight: 950 !important;
+    font-size: 30px !important;
+    letter-spacing: -.03em;
+}
+
+div[data-testid="stAlert"] {
+    background: linear-gradient(135deg, rgba(14,42,79,.88), rgba(7,26,51,.88)) !important;
+    border: 1px solid rgba(120,180,255,.18) !important;
+    border-radius: 16px !important;
+    color: #EAF4FF !important;
+    box-shadow: 0 12px 30px rgba(0,0,0,.20);
+}
+
+.stTextInput input,
+.stSelectbox div[data-baseweb="select"] > div,
+.stMultiSelect div[data-baseweb="select"] > div {
+    background: rgba(6,18,34,.96) !important;
+    color: #F6FAFF !important;
+    border: 1px solid rgba(120,180,255,.22) !important;
+    border-radius: 12px !important;
+}
+
+.stButton button,
+.stDownloadButton button,
+button[kind="primary"],
+button[kind="secondary"] {
+    background: linear-gradient(135deg, #0E64C8, #2CA0FF) !important;
+    color: #FFFFFF !important;
+    border: 1px solid rgba(255,255,255,.18) !important;
+    border-radius: 13px !important;
+    font-weight: 850 !important;
+    box-shadow: 0 10px 26px rgba(44,160,255,.25);
+    transition: all .18s ease;
+}
+
+.stButton button:hover,
+.stDownloadButton button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 15px 34px rgba(44,160,255,.36);
+}
+
+div[data-testid="stDataFrame"] {
+    width: 100% !important;
+    border-radius: 18px !important;
+    overflow: hidden !important;
+    border: 1px solid rgba(120,180,255,.16);
+    box-shadow: 0 16px 38px rgba(0,0,0,.24);
+}
+
+.js-plotly-plot, .plotly, .plot-container {
+    border-radius: 18px !important;
+}
+
+.eirox-hero-premium {
+    background:
+        radial-gradient(circle at top right, rgba(44,160,255,.26), transparent 27%),
+        linear-gradient(135deg, rgba(15,39,71,.98), rgba(7,17,31,.97));
+    border: 1px solid rgba(120,180,255,.20);
+    border-radius: 24px;
+    padding: 24px 26px;
+    margin-bottom: 18px;
+    box-shadow: 0 20px 52px rgba(0,0,0,.34);
+    position: relative;
+    overflow: hidden;
+}
+
+.eirox-hero-premium::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 4px;
+    background: linear-gradient(90deg, #2CA0FF, #2ED47A, #FFB946);
+}
+
+.eirox-hero-kicker {
+    color: #9FD0FF;
+    font-size: 12px;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    margin-bottom: 6px;
+}
+
+.eirox-hero-title {
+    color: #FFFFFF;
+    font-size: 31px;
+    line-height: 1.08;
+    font-weight: 950;
+    letter-spacing: -.035em;
+    margin: 0;
+}
+
+.eirox-hero-subtitle {
+    color: #BFD7FF;
+    font-size: 14px;
+    margin-top: 8px;
+}
+
+.eirox-badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin-top: 14px;
+}
+
+.eirox-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,.075);
+    border: 1px solid rgba(180,215,255,.16);
+    border-radius: 999px;
+    padding: 6px 11px;
+    color: #E6F4FF;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.eirox-alert-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+}
+
+.eirox-alert-card {
+    border-radius: 18px;
+    padding: 15px 16px;
+    border: 1px solid rgba(120,180,255,.17);
+    background: linear-gradient(135deg, rgba(15,39,71,.88), rgba(8,20,38,.88));
+    box-shadow: 0 12px 28px rgba(0,0,0,.22);
+}
+
+.eirox-alert-title {
+    color: #FFFFFF;
+    font-weight: 900;
+    font-size: 14px;
+    margin-bottom: 4px;
+}
+
+.eirox-alert-value {
+    color: #FFFFFF;
+    font-weight: 950;
+    font-size: 24px;
+    letter-spacing: -.02em;
+}
+
+.eirox-alert-caption {
+    color: #BFD7FF;
+    font-size: 12px;
+    margin-top: 3px;
+}
+
+.eirox-alert-red { border-color: rgba(255,92,122,.36); }
+.eirox-alert-yellow { border-color: rgba(255,185,70,.36); }
+.eirox-alert-green { border-color: rgba(46,212,122,.34); }
+
+@media (max-width: 1000px) {
+    .eirox-alert-grid { grid-template-columns: 1fr; }
+}
