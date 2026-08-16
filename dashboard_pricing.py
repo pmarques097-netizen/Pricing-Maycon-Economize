@@ -7062,7 +7062,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
         return df_pesquisa
 
 
-VERSAO_APP = "Enterprise v1.4.43"
+VERSAO_APP = "Enterprise v1.4.47"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -18698,6 +18698,188 @@ def eirox_v63_subidas_validas(base):
     return m
 
 
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def eirox_v147_mapa_menor_preco_bruto(_assinatura_venda=""):
+    """Mapa atômico EAN -> menor preço/loja/data direto da VENDA_TESTE.
+
+    Não altera a classificação do pricing. Serve apenas como fonte visual
+    final para impedir campos None no Streamlit Cloud quando dataframes
+    intermediários chegam incompletos.
+    """
+    registros = []
+    pasta = Path(__file__).resolve().parent / "VENDA_TESTE"
+    try:
+        arquivos = sorted(list(pasta.glob("*.xlsx")) + list(pasta.glob("*.xls")))
+    except Exception:
+        arquivos = []
+
+    for arq in arquivos:
+        try:
+            dfh = pd.read_excel(arq)
+        except Exception:
+            continue
+
+        mapa_col = {str(c).strip().casefold(): c for c in dfh.columns}
+        def _c(opts):
+            for o in opts:
+                c = mapa_col.get(str(o).strip().casefold())
+                if c is not None:
+                    return c
+            return None
+
+        ce = _c(["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras"])
+        cp = _c(["Preço (R$)", "Preco (R$)", "Preço", "Preco", "Valor"])
+        cl = _c(["Farmácia", "Farmacia", "Loja", "Estabelecimento", "Nome Fantasia"])
+        cd = _c(["Data Emissão", "Data Emissao", "Data da Pesquisa", "Data Pesquisa", "Data"])
+        if ce is None or cp is None:
+            continue
+
+        tmp = pd.DataFrame(index=dfh.index)
+        tmp["EAN"] = (
+            dfh[ce].astype(str)
+            .str.replace(".0", "", regex=False)
+            .str.replace(r"\D", "", regex=True)
+            .str.strip()
+        )
+        tmp["PRECO"] = pd.to_numeric(dfh[cp], errors="coerce")
+        tmp["LOJA"] = dfh[cl].fillna("").astype(str).str.strip() if cl is not None else ""
+        if cd is not None:
+            txt = dfh[cd].fillna("").astype(str).str.strip()
+            txt = txt.str.replace(
+                r"\s+(AMT|AMST|BRT|BRST|GMT(?:[+-]\d+)?|UTC(?:[+-]\d+)?)\s+",
+                " ", regex=True, flags=re.IGNORECASE
+            )
+            dt = pd.to_datetime(txt, format="%a %b %d %H:%M:%S %Y", errors="coerce")
+            faltou = dt.isna() & txt.ne("")
+            if faltou.any():
+                try:
+                    dt2 = pd.to_datetime(txt[faltou], errors="coerce", dayfirst=True, format="mixed")
+                except Exception:
+                    dt2 = pd.to_datetime(txt[faltou], errors="coerce", dayfirst=True)
+                dt.loc[faltou] = dt2
+            tmp["DATA"] = dt
+        else:
+            tmp["DATA"] = pd.NaT
+
+        tmp = tmp[tmp["EAN"].ne("") & tmp["PRECO"].notna() & (tmp["PRECO"] > 0)]
+        if not tmp.empty:
+            registros.append(tmp)
+
+    if not registros:
+        return {}
+
+    hist = pd.concat(registros, ignore_index=True)
+    # Em empate de menor preço, fica com a ocorrência mais recente.
+    hist = hist.sort_values(["EAN", "PRECO", "DATA"], ascending=[True, True, False], kind="stable")
+    vencedores = hist.drop_duplicates(subset=["EAN"], keep="first")
+    mapa = {}
+    for _, r in vencedores.iterrows():
+        dt = r.get("DATA")
+        mapa[str(r["EAN"])] = {
+            "preco": float(r["PRECO"]),
+            "loja": str(r.get("LOJA", "") or "").strip(),
+            "data": dt.strftime("%d/%m/%Y") if pd.notna(dt) else "",
+        }
+    return mapa
+
+
+def eirox_v147_corrigir_lista_subir_final(tab):
+    """Barreira final e determinística da Lista Priorizada.
+
+    Tela e Excel recebem este MESMO dataframe. Não filtra/reclassifica linhas.
+    """
+    if not isinstance(tab, pd.DataFrame) or tab.empty:
+        return tab
+    out = tab.copy()
+
+    def _num(v):
+        if v is None:
+            return np.nan
+        try:
+            if pd.isna(v):
+                return np.nan
+        except Exception:
+            pass
+        if isinstance(v, (int, float, np.number)):
+            return float(v)
+        t = str(v).strip().replace("R$", "").replace("%", "").replace(" ", "")
+        if not t or t.lower() in {"none", "nan", "nat", "null", "r$nan"}:
+            return np.nan
+        if "," in t and "." in t:
+            if t.rfind(",") > t.rfind("."):
+                t = t.replace(".", "").replace(",", ".")
+            else:
+                t = t.replace(",", "")
+        elif "," in t:
+            t = t.replace(".", "").replace(",", ".")
+        try:
+            return float(t)
+        except Exception:
+            return np.nan
+
+    try:
+        assinatura = assinatura_pasta("VENDA_TESTE") if "assinatura_pasta" in globals() else ""
+    except Exception:
+        assinatura = ""
+    try:
+        mapa_min = eirox_v147_mapa_menor_preco_bruto(assinatura)
+    except Exception:
+        mapa_min = {}
+
+    for idx in out.index:
+        # Preço sugerido nesta regra é o Preço Mercado já utilizado no ganho.
+        pm = _num(out.at[idx, "Preço Mercado"]) if "Preço Mercado" in out.columns else np.nan
+        ps = _num(out.at[idx, "Preço Sugerido"]) if "Preço Sugerido" in out.columns else np.nan
+        au = _num(out.at[idx, "Aumento Unitário"]) if "Aumento Unitário" in out.columns else np.nan
+        pa = _num(out.at[idx, "Preço Atual"]) if "Preço Atual" in out.columns else np.nan
+
+        if (pd.isna(ps) or ps <= 0) and pd.notna(pm) and pm > 0:
+            ps = pm
+            out.at[idx, "Preço Sugerido"] = _eirox_moeda_num(ps)
+
+        # Relação exata já usada pelo próprio relatório: aumento = sugerido - atual.
+        if (pd.isna(pa) or pa <= 0) and pd.notna(ps) and pd.notna(au) and ps > au >= 0:
+            pa = ps - au
+            if pa > 0:
+                out.at[idx, "Preço Atual"] = _eirox_moeda_num(pa)
+
+        # Menor preço/loja/data atômicos da VENDA_TESTE, todos da mesma linha.
+        ean = ""
+        if "EAN" in out.columns:
+            ean = re.sub(r"\D", "", str(out.at[idx, "EAN"] or "").replace(".0", ""))
+        atom = mapa_min.get(ean, {}) if ean else {}
+        mp = _num(out.at[idx, "Menor Preço Concorrente"]) if "Menor Preço Concorrente" in out.columns else np.nan
+        if atom:
+            mp_atom = atom.get("preco")
+            if (pd.isna(mp) or mp <= 0) and mp_atom is not None and mp_atom > 0:
+                out.at[idx, "Menor Preço Concorrente"] = _eirox_moeda_num(mp_atom)
+            # Se o menor preço foi recuperado da fonte bruta, loja e data devem
+            # obrigatoriamente vir da MESMA ocorrência para evitar desalinhamento.
+            if mp_atom is not None and mp_atom > 0:
+                if "Loja do Menor Preço" in out.columns and atom.get("loja"):
+                    out.at[idx, "Loja do Menor Preço"] = atom["loja"]
+                if "Data da Pesquisa" in out.columns and atom.get("data"):
+                    out.at[idx, "Data da Pesquisa"] = atom["data"]
+
+        # Custo unitário: recuperado de uma identidade já exibida no relatório.
+        # Margem Atual = (Preço Atual - Custo) / Preço Atual.
+        cu = _num(out.at[idx, "Custo Unitário"]) if "Custo Unitário" in out.columns else np.nan
+        if (pd.isna(cu) or cu <= 0) and pd.notna(pa) and pa > 0 and "Margem Atual" in out.columns:
+            mg = _num(out.at[idx, "Margem Atual"])
+            if pd.notna(mg):
+                # Percentuais chegam como 30,9 / -4,2 / 100,0.
+                # Normaliza tanto margens positivas quanto negativas.
+                if abs(mg) > 1:
+                    mg = mg / 100.0
+                if -10 < mg <= 1:
+                    cu_calc = pa * (1.0 - mg)
+                    if cu_calc >= 0:
+                        out.at[idx, "Custo Unitário"] = _eirox_moeda_num(cu_calc)
+
+    return out.reset_index(drop=True)
+
+
 def eirox_v63_tabela_subidas(base):
     # V1.4.46 — a lista SUBIR PREÇO usa a MESMA referência atômica de
     # menor preço/loja/data já validada nas demais telas. O enriquecimento
@@ -19143,6 +19325,10 @@ def eirox_v63_tabela_subidas(base):
     except Exception:
         pass
 
+    # V1.4.47 — correção final, independente dos dataframes intermediários.
+    # Esta chamada é propositalmente fora dos blocos try anteriores para que
+    # uma falha de lookup auxiliar não impeça Preço Atual/Sugerido/Custo.
+    out = eirox_v147_corrigir_lista_subir_final(out)
     return out
 
 
