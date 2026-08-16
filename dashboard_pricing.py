@@ -15355,6 +15355,13 @@ def carregar():
         return pd.DataFrame()
 
 historico = eirox_carregar_base_persistente("historico", _eirox_sig_historico, carregar_historico)
+# V1.4.45 — guarda o estado REAL da primeira carga. No Streamlit Cloud,
+# arquivos .xls podem não ser lidos pelo loader primário e só entram pelos
+# fallbacks de compatibilidade abaixo. O motor mestre precisa ser reconstruído
+# depois desses fallbacks; localmente isso não aparecia porque os caches já
+# deixavam as quatro bases preenchidas antes do primeiro processamento.
+_eirox_primeira_historico_vazia = not isinstance(historico, pd.DataFrame) or historico.empty
+
 historico = eirox_preprocessar_historico_cacheado(
     _eirox_sig_historico,
     _eirox_sig_contexto,
@@ -15374,14 +15381,17 @@ except Exception:
     pass
 
 compra = eirox_carregar_base_persistente("compra", _eirox_sig_compra, carregar_compra)
+_eirox_primeira_compra_vazia = not isinstance(compra, pd.DataFrame) or compra.empty
 compra = eirox_classificar_base_cacheada(
     "Compra", _eirox_sig_compra, _eirox_sig_contexto, compra
 )
 venda_rede = eirox_carregar_base_persistente("venda", _eirox_sig_venda, carregar_venda_rede)
+_eirox_primeira_venda_vazia = not isinstance(venda_rede, pd.DataFrame) or venda_rede.empty
 venda_rede = eirox_classificar_base_cacheada(
     "Venda", _eirox_sig_venda, _eirox_sig_contexto, venda_rede
 )
 estoque = eirox_carregar_base_persistente("estoque", _eirox_sig_estoque, carregar_estoque)
+_eirox_primeira_estoque_vazia = not isinstance(estoque, pd.DataFrame) or estoque.empty
 estoque = eirox_classificar_base_cacheada(
     "Estoque", _eirox_sig_estoque, _eirox_sig_contexto, estoque
 )
@@ -15488,6 +15498,70 @@ if estoque.empty:
         ["ESTOQUE_TESTE", "ESTOQUE"],
         ["ESTOQUE_TESTE.zip", "ESTOQUE.zip"]
     )
+
+# --------------------------------------------------
+# V1.4.45 — PARIDADE LOCAL x STREAMLIT CLOUD
+# --------------------------------------------------
+# No Cloud, principalmente na PRIMEIRA execução, VENDA_FINAL_TESTE e
+# ESTOQUE_TESTE (.xls) podem ser recuperadas apenas nos fallbacks acima.
+# Até a V1.4.44 o `df` já havia sido construído ANTES dessa recuperação e
+# continuava parcial, embora as variáveis venda_rede/estoque/compra depois
+# estivessem corretas. Resultado: datas voltavam em alguns pontos, mas
+# Preço Atual, Menor Preço, Preço Sugerido e Custo ficavam None.
+#
+# Reprocessamos SOMENTE quando alguma base estava vazia na primeira carga.
+# Localmente, onde a carga inicial já funciona, não muda absolutamente nada.
+_eirox_cloud_precisou_fallback = any([
+    _eirox_primeira_historico_vazia,
+    _eirox_primeira_compra_vazia,
+    _eirox_primeira_venda_vazia,
+    _eirox_primeira_estoque_vazia,
+])
+
+if _eirox_cloud_precisou_fallback:
+    try:
+        # Aplica as mesmas camadas de preparação usadas na carga normal.
+        if isinstance(historico, pd.DataFrame) and not historico.empty:
+            historico = eirox_preprocessar_historico_cacheado(
+                _eirox_sig_historico,
+                _eirox_sig_contexto,
+                _eirox_sig_geo,
+                historico,
+            )
+        if isinstance(compra, pd.DataFrame) and not compra.empty:
+            compra = eirox_classificar_base_cacheada(
+                "Compra", _eirox_sig_compra, _eirox_sig_contexto, compra
+            )
+        if isinstance(venda_rede, pd.DataFrame) and not venda_rede.empty:
+            venda_rede = eirox_classificar_base_cacheada(
+                "Venda", _eirox_sig_venda, _eirox_sig_contexto, venda_rede
+            )
+        if isinstance(estoque, pd.DataFrame) and not estoque.empty:
+            estoque = eirox_classificar_base_cacheada(
+                "Estoque", _eirox_sig_estoque, _eirox_sig_contexto, estoque
+            )
+
+        # ESSENCIAL: reconstrói a base mestre usando as fontes que os fallbacks
+        # acabaram de recuperar. Preserva exatamente o mesmo motor estável.
+        df = eirox_processar_base_master_cacheada(
+            _eirox_sig_historico,
+            _eirox_sig_compra,
+            _eirox_sig_venda,
+            _eirox_sig_estoque,
+            _eirox_sig_contexto,
+            historico,
+            compra,
+            venda_rede,
+            estoque,
+        ).copy()
+    except Exception:
+        # Segurança: nunca derruba o app por causa da camada de paridade.
+        try:
+            df = construir_base_pricing_somente_pastas(
+                historico, compra, venda_rede, estoque
+            )
+        except Exception:
+            pass
 
 # --------------------------------------------------
 # PADRONIZAR COLUNAS

@@ -1,0 +1,20 @@
+V1.4.45 — PARIDADE LOCAL x STREAMLIT CLOUD
+
+Correção aplicada sem alterar fórmulas ou regras de pricing.
+
+Causa identificada:
+- No Streamlit Cloud, na primeira execução, arquivos .xls de VENDA_FINAL_TESTE e ESTOQUE_TESTE podem ser carregados apenas pelos fallbacks compatíveis.
+- Até a V1.4.44, o DataFrame mestre `df` era construído ANTES desses fallbacks.
+- Assim, as variáveis venda_rede/estoque/compra ficavam preenchidas depois, mas `df` permanecia parcial.
+- Isso explicava por que localmente tudo funcionava (cache/carga inicial completa), enquanto no Cloud alguns campos ficavam None.
+
+Correção:
+- Detecta se alguma das quatro bases estava vazia na primeira carga.
+- Após os fallbacks, reaplica a mesma preparação/classificação.
+- Reconstrói `df` com as bases efetivamente recuperadas.
+- Nenhuma regra, filtro, classificação ou quantidade é alterada.
+
+Validação estática:
+- AST: OK
+- py_compile: OK
+- requirements.txt contém xlrd para leitura dos arquivos .xls no Streamlit Cloud.
