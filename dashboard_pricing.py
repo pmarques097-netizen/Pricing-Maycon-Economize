@@ -18699,7 +18699,19 @@ def eirox_v63_subidas_validas(base):
 
 
 def eirox_v63_tabela_subidas(base):
-    motor = eirox_v63_subidas_validas(base)
+    # V1.4.46 — a lista SUBIR PREÇO usa a MESMA referência atômica de
+    # menor preço/loja/data já validada nas demais telas. O enriquecimento
+    # não filtra nem reclassifica registros; apenas acrescenta campos.
+    _base_v146 = base
+    try:
+        _base_v146 = eirox_enriquecer_menor_preco_concorrente(
+            base, historico if "historico" in globals() else None
+        )
+        _base_v146 = eirox_padronizar_campos_pesquisa_global(_base_v146)
+    except Exception:
+        _base_v146 = base
+
+    motor = eirox_v63_subidas_validas(_base_v146)
     if motor.empty:
         return motor
 
@@ -19010,6 +19022,124 @@ def eirox_v63_tabela_subidas(base):
                 _dt_i = eirox_recuperar_data_bruta_linha(_ean_i, _mp_i, _loja_i)
                 if _dt_i:
                     out.at[_i, "Data da Pesquisa"] = _dt_i
+    except Exception:
+        pass
+
+    # V1.4.46 — BARREIRA FINAL DE PARIDADE LOCAL x CLOUD.
+    # A tela e o Excel recebem o MESMO dataframe final. Nenhuma linha é
+    # filtrada/reclassificada nesta etapa; somente campos vazios são
+    # preenchidos com valores já existentes ou identidades matemáticas
+    # do próprio cálculo aprovado.
+    try:
+        def _v146_num(v):
+            if v is None:
+                return np.nan
+            try:
+                if pd.isna(v):
+                    return np.nan
+            except Exception:
+                pass
+            if isinstance(v, (int, float, np.number)):
+                return float(v)
+            t = str(v).strip().replace("R$", "").replace("%", "").replace(" ", "")
+            if not t or t.lower() in {"none", "nan", "nat", "r$nan"}:
+                return np.nan
+            # aceita BR (1.234,56) e US (1,234.56 / 1234.56)
+            if "," in t and "." in t:
+                if t.rfind(",") > t.rfind("."):
+                    t = t.replace(".", "").replace(",", ".")
+                else:
+                    t = t.replace(",", "")
+            elif "," in t:
+                t = t.replace(".", "").replace(",", ".")
+            try:
+                return float(t)
+            except Exception:
+                return np.nan
+
+        def _v146_missing(v):
+            return pd.isna(_v146_num(v)) or _v146_num(v) <= 0
+
+        # Lookup por EAN da própria base já enriquecida.
+        _lookup = {}
+        try:
+            _src146 = _base_v146 if isinstance(_base_v146, pd.DataFrame) else base
+            _ce146 = _eirox_first_col(_src146, ["EAN", "EAN (GTIN)", "GTIN"])
+            if _ce146:
+                for _, _r146 in _src146.iterrows():
+                    _e146 = _normalizar_ean_eirox(_r146.get(_ce146, ""))
+                    if not _e146:
+                        continue
+                    _d146 = _lookup.setdefault(_e146, {})
+                    for _dest146, _opts146 in {
+                        "pa": ["Preco_Atual_Venda", "Preço_Atual_Venda", "Preco_Atual", "Preço_Atual", "Preço Atual", "Preco Atual", "Preço Principal", "Preco Principal"],
+                        "mp": ["Menor Preço Concorrente", "Menor_Preco_Concorrente", "Menor_Preco", "Menor Preço"],
+                        "cu": ["Custo_Unitario_Eirox", "Custo_Estoque_Unitario", "Custo_Unitario", "Custo Unitário", "Custo"],
+                    }.items():
+                        if _dest146 in _d146 and pd.notna(_d146[_dest146]) and _d146[_dest146] > 0:
+                            continue
+                        for _c146 in _opts146:
+                            if _c146 in _src146.columns:
+                                _v146 = _v146_num(_r146.get(_c146))
+                                if pd.notna(_v146) and _v146 > 0:
+                                    _d146[_dest146] = _v146
+                                    break
+        except Exception:
+            _lookup = {}
+
+        for _i146 in out.index:
+            _ean146 = _normalizar_ean_eirox(out.at[_i146, "EAN"]) if "EAN" in out.columns else ""
+            _lk146 = _lookup.get(_ean146, {})
+
+            _pm146 = _v146_num(out.at[_i146, "Preço Mercado"]) if "Preço Mercado" in out.columns else np.nan
+            _ps146 = _v146_num(out.at[_i146, "Preço Sugerido"]) if "Preço Sugerido" in out.columns else np.nan
+            _au146 = _v146_num(out.at[_i146, "Aumento Unitário"]) if "Aumento Unitário" in out.columns else np.nan
+            _pa146 = _v146_num(out.at[_i146, "Preço Atual"]) if "Preço Atual" in out.columns else np.nan
+            _mp146 = _v146_num(out.at[_i146, "Menor Preço Concorrente"]) if "Menor Preço Concorrente" in out.columns else np.nan
+            _cu146 = _v146_num(out.at[_i146, "Custo Unitário"]) if "Custo Unitário" in out.columns else np.nan
+
+            # Preço sugerido = preço competitivo/mercado já usado na ação.
+            if (pd.isna(_ps146) or _ps146 <= 0) and pd.notna(_pm146) and _pm146 > 0:
+                _ps146 = _pm146
+                out.at[_i146, "Preço Sugerido"] = _eirox_moeda_num(_ps146)
+
+            # Preço atual: fonte por EAN; fallback exato do cálculo: sugerido - aumento.
+            if pd.isna(_pa146) or _pa146 <= 0:
+                _pa146 = _lk146.get("pa", np.nan)
+            if (pd.isna(_pa146) or _pa146 <= 0) and pd.notna(_ps146) and pd.notna(_au146) and _ps146 > _au146 >= 0:
+                _pa146 = _ps146 - _au146
+            if pd.notna(_pa146) and _pa146 > 0:
+                out.at[_i146, "Preço Atual"] = _eirox_moeda_num(_pa146)
+
+            # Menor preço concorrente: fonte atômica por EAN (mesma de loja/data).
+            if pd.isna(_mp146) or _mp146 <= 0:
+                _mp146 = _lk146.get("mp", np.nan)
+            if pd.notna(_mp146) and _mp146 > 0:
+                out.at[_i146, "Menor Preço Concorrente"] = _eirox_moeda_num(_mp146)
+
+            # Custo: fonte por EAN; fallback pela margem atual já calculada.
+            if pd.isna(_cu146) or _cu146 <= 0:
+                _cu146 = _lk146.get("cu", np.nan)
+            if (pd.isna(_cu146) or _cu146 <= 0) and pd.notna(_pa146) and _pa146 > 0 and "Margem Atual" in out.columns:
+                _mg146 = _v146_num(out.at[_i146, "Margem Atual"])
+                if pd.notna(_mg146):
+                    if _mg146 > 1:
+                        _mg146 /= 100.0
+                    if -1 < _mg146 < 1:
+                        _calc146 = _pa146 * (1.0 - _mg146)
+                        if _calc146 > 0:
+                            _cu146 = _calc146
+            if pd.notna(_cu146) and _cu146 > 0:
+                out.at[_i146, "Custo Unitário"] = _eirox_moeda_num(_cu146)
+
+            # Data sempre vinculada ao menor preço/loja da própria linha.
+            if "Data da Pesquisa" in out.columns:
+                _dtxt146 = str(out.at[_i146, "Data da Pesquisa"] or "").strip().lower()
+                if _dtxt146 in {"", "none", "nan", "nat", "sem data na fonte"}:
+                    _loja146 = out.at[_i146, "Loja do Menor Preço"] if "Loja do Menor Preço" in out.columns else None
+                    _dt146 = eirox_recuperar_data_bruta_linha(_ean146, _mp146, _loja146)
+                    if _dt146:
+                        out.at[_i146, "Data da Pesquisa"] = _dt146
     except Exception:
         pass
 
@@ -30277,6 +30407,31 @@ if not simulacao_global.empty:
     colunas_exibir = [c for c in colunas_exibir if c in simulacao.columns]
 
     simulacao_exibir = simulacao[colunas_exibir].copy()
+
+    # V1.4.46 — datas do simulador ligadas à MESMA ocorrência de preço/rede.
+    # Mantém todos os valores financeiros já aprovados e apenas completa as datas.
+    try:
+        if "EAN" in simulacao_exibir.columns:
+            for _ix146 in simulacao_exibir.index:
+                _ean146 = simulacao_exibir.at[_ix146, "EAN"]
+                if "Data_Preco_Maximo_Competitivo" in simulacao_exibir.columns:
+                    _dmax146 = simulacao_exibir.at[_ix146, "Data_Preco_Maximo_Competitivo"]
+                    if pd.isna(_dmax146) or str(_dmax146).strip().lower() in {"", "none", "nan", "nat", "sem data na fonte"}:
+                        _pmax146 = simulacao_exibir.at[_ix146, "Preco_Sugerido_Mercado"] if "Preco_Sugerido_Mercado" in simulacao_exibir.columns else None
+                        _rmax146 = simulacao_exibir.at[_ix146, "Rede_Preco_Maximo_Competitivo"] if "Rede_Preco_Maximo_Competitivo" in simulacao_exibir.columns else None
+                        _dtmax146 = eirox_recuperar_data_bruta_linha(_ean146, _pmax146, _rmax146)
+                        if _dtmax146:
+                            simulacao_exibir.at[_ix146, "Data_Preco_Maximo_Competitivo"] = _dtmax146
+                if "Data_Menor_Preco" in simulacao_exibir.columns:
+                    _dmin146 = simulacao_exibir.at[_ix146, "Data_Menor_Preco"]
+                    if pd.isna(_dmin146) or str(_dmin146).strip().lower() in {"", "none", "nan", "nat", "sem data na fonte"}:
+                        _pmin146 = simulacao_exibir.at[_ix146, "Menor_Preco"] if "Menor_Preco" in simulacao_exibir.columns else None
+                        _rmin146 = simulacao_exibir.at[_ix146, "Rede_Menor_Preco"] if "Rede_Menor_Preco" in simulacao_exibir.columns else None
+                        _dtmin146 = eirox_recuperar_data_bruta_linha(_ean146, _pmin146, _rmin146)
+                        if _dtmin146:
+                            simulacao_exibir.at[_ix146, "Data_Menor_Preco"] = _dtmin146
+    except Exception:
+        pass
 
     for coluna in [
         "Venda_Preco_Antigo",
