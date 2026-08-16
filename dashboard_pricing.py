@@ -13,6 +13,8 @@ import plotly.graph_objects as go
 import plotly.io as pio
 import hashlib
 import time
+import threading
+import uuid
 import csv
 import io
 from io import BytesIO
@@ -7060,7 +7062,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
         return df_pesquisa
 
 
-VERSAO_APP = "Enterprise v1.4.33"
+VERSAO_APP = "Enterprise v1.4.42"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -10062,6 +10064,45 @@ def registrar_alerta_login(usuario, nome, perfil):
         pass
 
 
+def registrar_alerta_navegacao_async(pagina):
+    """
+    Notifica a navegação sem bloquear a troca de tela.
+    O histórico local continua sendo gravado pela Central de Auditoria;
+    o Telegram funciona como trilha externa/persistente no Streamlit Cloud.
+    """
+    try:
+        if not st.session_state.get("logado", False):
+            return
+
+        usuario = st.session_state.get("usuario", "")
+        nome = st.session_state.get("nome_usuario", "")
+        perfil = st.session_state.get("perfil_usuario", "")
+        empresa_id = st.session_state.get("empresa_id_contexto", st.session_state.get("empresa_id_usuario", ""))
+        sessao_id = st.session_state.get("auditoria_session_id", "")
+        ambiente = "Streamlit Cloud" if "/mount/src" in str(Path.cwd()) else "Localhost"
+
+        mensagem = (
+            "🧭 <b>Navegação no Eirox Pricing</b>\n\n"
+            f"👤 <b>Usuário:</b> {usuario}\n"
+            f"🙋 <b>Nome:</b> {nome}\n"
+            f"🔐 <b>Perfil:</b> {perfil}\n"
+            f"🏢 <b>Empresa:</b> {empresa_id}\n"
+            f"📄 <b>Tela:</b> {pagina}\n"
+            f"🆔 <b>Sessão:</b> {sessao_id}\n"
+            f"🕒 <b>Horário:</b> {horario_brasil_formatado()}\n"
+            f"🌐 <b>Ambiente:</b> {ambiente}\n"
+            f"🏷️ <b>Versão:</b> {VERSAO_APP}"
+        )
+
+        def _enviar():
+            try:
+                enviar_alerta_telegram(mensagem)
+            except Exception:
+                pass
+
+        threading.Thread(target=_enviar, daemon=True).start()
+    except Exception:
+        pass
 
 
 # --------------------------------------------------
@@ -10087,9 +10128,11 @@ def salvar_log_acesso(evento, tela="", detalhe=""):
 
         linha = {
             "Data_Hora": horario_brasil_formatado() if "horario_brasil_formatado" in globals() else datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            "Sessao_ID": st.session_state.get("auditoria_session_id", ""),
             "Usuario": st.session_state.get("usuario", ""),
             "Nome": st.session_state.get("nome_usuario", ""),
             "Perfil": st.session_state.get("perfil_usuario", ""),
+            "EmpresaID": st.session_state.get("empresa_id_contexto", st.session_state.get("empresa_id_usuario", "")),
             "Evento": str(evento),
             "Tela": str(tela),
             "Detalhe": str(detalhe),
@@ -14522,6 +14565,7 @@ def iniciar_auditoria_sessao(usuario, nome, perfil):
         if not st.session_state.get("auditoria_sessao_iniciada", False):
 
             st.session_state["auditoria_sessao_iniciada"] = True
+            st.session_state["auditoria_session_id"] = st.session_state.get("auditoria_session_id") or uuid.uuid4().hex[:12]
             st.session_state["auditoria_usuario"] = usuario
             st.session_state["auditoria_nome"] = nome
             st.session_state["auditoria_perfil"] = perfil
@@ -14925,6 +14969,12 @@ def tela_login():
             st.session_state["empresa_id_usuario"] = dados_login.get("EmpresaID", "1") if dados_login else "1"
             st.session_state["empresa_id_contexto"] = st.session_state["empresa_id_usuario"]
 
+            iniciar_auditoria_sessao(
+                usuario_key,
+                st.session_state["nome_usuario"],
+                st.session_state["perfil_usuario"]
+            )
+
             salvar_log_acesso(
                 "Login",
                 "Sistema",
@@ -14932,12 +14982,6 @@ def tela_login():
             )
 
             registrar_alerta_login(
-                usuario_key,
-                st.session_state["nome_usuario"],
-                st.session_state["perfil_usuario"]
-            )
-
-            iniciar_auditoria_sessao(
                 usuario_key,
                 st.session_state["nome_usuario"],
                 st.session_state["perfil_usuario"]
@@ -14970,6 +15014,11 @@ def exigir_login():
 
 
 def logout():
+
+    try:
+        salvar_log_acesso("Logout", st.session_state.get("auditoria_ultima_pagina", "Sistema"), "Encerramento da sessão")
+    except Exception:
+        pass
 
     enviar_resumo_navegacao_telegram()
 
@@ -15838,6 +15887,7 @@ registrar_pagina_acessada(pagina)
 
 if st.session_state.get("ultima_pagina_logada") != pagina:
     salvar_log_acesso("Navegação", pagina, "Troca de tela")
+    registrar_alerta_navegacao_async(pagina)
     st.session_state["ultima_pagina_logada"] = pagina
 # enviar_alerta_localizacao_capturada()  # desativado para melhorar velocidade entre telas
 # enviar_resumo_periodico_navegacao()  # desativado para melhorar velocidade entre telas
@@ -21712,9 +21762,11 @@ if pagina == "🔐 Central de Auditoria":
 
     colunas_exibir = [
         "Data_Hora",
+        "Sessao_ID",
         "Usuario",
         "Nome",
         "Perfil",
+        "EmpresaID",
         "Evento",
         "Tela",
         "Detalhe",
@@ -21857,7 +21909,7 @@ if pagina == "🔐 Central de Auditoria":
         logs_view = logs_view.sort_values("Data_Hora_dt", ascending=False)
 
     colunas = [
-        "Data_Hora", "Usuario", "Nome", "Perfil", "Evento", "Tela", "Detalhe",
+        "Data_Hora", "Sessao_ID", "Usuario", "Nome", "Perfil", "EmpresaID", "Evento", "Tela", "Detalhe",
         "Latitude", "Longitude", "Precisao_Metros", "Status_Localizacao",
         "Ambiente", "Versao"
     ]

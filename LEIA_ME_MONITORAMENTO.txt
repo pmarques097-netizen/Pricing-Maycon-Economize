@@ -1,0 +1,24 @@
+EIROX PRICING ENTERPRISE — MONITORAMENTO DE ACESSOS v1.4.42
+
+O sistema registra automaticamente:
+- Login com data/hora, usuário, nome, perfil, empresa e ID de sessão.
+- Cada troca de tela, com nome da tela acessada.
+- Logout e última tela da sessão.
+- Ambiente e versão da aplicação.
+- Localização, quando autorizada/disponível.
+
+ONDE CONSULTAR
+1. Entrar com um usuário Master.
+2. Menu Administração Eirox > Central de Auditoria.
+3. Usar filtros por usuário, evento, tela e data.
+4. Exportar em CSV ou Excel.
+
+TRILHA EXTERNA / STREAMLIT CLOUD
+Se TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID estiverem configurados nos Secrets do Streamlit,
+o sistema envia:
+- Alerta de novo login.
+- Alerta de cada tela acessada, em segundo plano, sem bloquear a navegação.
+- Resumo da sessão ao clicar em Sair.
+
+Observação: o arquivo local de auditoria no Streamlit Cloud pode ser reiniciado em reboot/redeploy.
+O Telegram funciona como histórico externo persistente dos acessos/navegações.
