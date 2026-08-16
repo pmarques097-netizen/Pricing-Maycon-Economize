@@ -16903,6 +16903,136 @@ def eirox_mapa_data_pesquisa_bruta_cacheado(assinatura_historico):
     return mapa
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def eirox_mapa_data_pesquisa_detalhada_cacheado(assinatura_historico):
+    """Mapas de Data Emissão diretamente da VENDA_TESTE.
+
+    Usado somente como fallback visual nas telas que exibem a mesma ocorrência
+    de concorrência (EAN + preço e, quando disponível, loja). Não altera
+    recomendação, cálculo ou classificação do Pricing.
+    """
+    por_ean = {}
+    por_ean_preco = {}
+    por_ean_loja = {}
+    por_ean_loja_preco = {}
+    try:
+        base_dir = Path(__file__).resolve().parent
+        pasta = base_dir / "VENDA_TESTE"
+        if not pasta.exists():
+            return por_ean, por_ean_preco, por_ean_loja, por_ean_loja_preco
+
+        arquivos = []
+        for padrao in ("*.xlsx", "*.xls", "*.xlsm", "*.csv"):
+            arquivos.extend(pasta.glob(padrao))
+
+        def _norm_loja(v):
+            txt = str(v or "").strip().upper()
+            txt = re.sub(r"\s+", " ", txt)
+            return txt
+
+        for arquivo in sorted(set(arquivos), key=lambda x: x.name.lower()):
+            try:
+                suf = arquivo.suffix.lower()
+                if suf == ".csv":
+                    try:
+                        temp = pd.read_csv(arquivo, sep=None, engine="python", encoding="utf-8-sig")
+                    except Exception:
+                        temp = pd.read_csv(arquivo, sep=None, engine="python", encoding="latin1")
+                elif suf == ".xls":
+                    temp = pd.read_excel(arquivo, engine="xlrd")
+                else:
+                    temp = pd.read_excel(arquivo, engine="openpyxl")
+                if not isinstance(temp, pd.DataFrame) or temp.empty:
+                    continue
+                temp.columns = temp.columns.astype(str).str.strip()
+                c_ean = next((c for c in ["EAN", "EAN (GTIN)", "GTIN"] if c in temp.columns), None)
+                c_preco = next((c for c in ["Preço (R$)", "Preco (R$)", "Preço", "Preco", "Valor"] if c in temp.columns), None)
+                c_loja = next((c for c in ["Farmácia", "Farmacia", "Nome Fantasia", "Loja", "Estabelecimento"] if c in temp.columns), None)
+                c_data = next((c for c in ["Data Emissão", "Data Emissao", "Data da Pesquisa", "Data Pesquisa", "Data"] if c in temp.columns), None)
+                if not c_ean:
+                    continue
+
+                eans = (temp[c_ean].astype(str)
+                        .str.replace(".0", "", regex=False)
+                        .str.replace(r"\D", "", regex=True)
+                        .str.strip())
+                precos = pd.to_numeric(temp[c_preco], errors="coerce").round(2) if c_preco else pd.Series(np.nan, index=temp.index)
+                lojas = temp[c_loja].apply(_norm_loja) if c_loja else pd.Series("", index=temp.index)
+
+                if c_data:
+                    vals = temp[c_data].fillna("").astype(str).str.strip()
+                    vals = vals.str.replace(
+                        r"\s+(AMT|AMST|BRT|BRST|GMT(?:[+-]\d+)?|UTC(?:[+-]\d+)?)\s+",
+                        " ", regex=True, flags=re.IGNORECASE
+                    )
+                    try:
+                        dts = pd.to_datetime(vals, errors="coerce", dayfirst=True, format="mixed")
+                    except Exception:
+                        dts = pd.to_datetime(vals, errors="coerce", dayfirst=True)
+                else:
+                    dts = pd.Series(pd.NaT, index=temp.index)
+
+                m = re.search(r"Pesquisa[_ -]?(\d{8})", arquivo.stem, flags=re.IGNORECASE)
+                dt_nome = pd.to_datetime(m.group(1), format="%Y%m%d", errors="coerce") if m else pd.NaT
+
+                for i, ean in eans.items():
+                    if not ean:
+                        continue
+                    dt = dts.loc[i] if i in dts.index else pd.NaT
+                    if pd.isna(dt):
+                        dt = dt_nome
+                    if pd.isna(dt):
+                        continue
+                    loja = lojas.loc[i] if i in lojas.index else ""
+                    preco = precos.loc[i] if i in precos.index else np.nan
+
+                    def _keep_latest(mapa, chave):
+                        ant = mapa.get(chave)
+                        if ant is None or dt > ant:
+                            mapa[chave] = dt
+
+                    _keep_latest(por_ean, ean)
+                    if pd.notna(preco):
+                        _keep_latest(por_ean_preco, (ean, float(preco)))
+                    if loja:
+                        _keep_latest(por_ean_loja, (ean, loja))
+                        if pd.notna(preco):
+                            _keep_latest(por_ean_loja_preco, (ean, loja, float(preco)))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return por_ean, por_ean_preco, por_ean_loja, por_ean_loja_preco
+
+
+def eirox_recuperar_data_bruta_linha(ean, preco=None, loja=None):
+    """Retorna dd/mm/aaaa usando a ocorrência real da VENDA_TESTE."""
+    try:
+        ean_n = re.sub(r"\D", "", str(ean or "").replace(".0", ""))
+        if not ean_n:
+            return None
+        p_ean, p_ep, p_el, p_elp = eirox_mapa_data_pesquisa_detalhada_cacheado(
+            assinatura_pasta("VENDA_TESTE")
+        )
+        loja_n = re.sub(r"\s+", " ", str(loja or "").strip().upper())
+        try:
+            preco_n = round(float(preco), 2) if preco is not None and not pd.isna(preco) else None
+        except Exception:
+            preco_n = None
+        dt = None
+        if loja_n and preco_n is not None:
+            dt = p_elp.get((ean_n, loja_n, preco_n))
+        if dt is None and preco_n is not None:
+            dt = p_ep.get((ean_n, preco_n))
+        if dt is None and loja_n:
+            dt = p_el.get((ean_n, loja_n))
+        if dt is None:
+            dt = p_ean.get(ean_n)
+        return dt.strftime("%d/%m/%Y") if dt is not None and not pd.isna(dt) else None
+    except Exception:
+        return None
+
+
 def eirox_v142_data_final_unica(df, historico_base=None):
     """Fonte única de Data da Pesquisa para tela, CSV e Excel."""
     if not isinstance(df, pd.DataFrame):
@@ -18763,6 +18893,50 @@ def eirox_v63_tabela_subidas(base):
     except Exception:
         # A correção é apenas de apresentação/enriquecimento; em nenhuma hipótese
         # pode derrubar ou reclassificar a lista já calculada.
+        pass
+
+    # V1.4.44 — reforço pontual da tela SUBIR PREÇO.
+    # Não toca na seleção das 408 ações. Apenas preenche campos visuais que já
+    # possuem informação derivável/recuperável na própria linha/base.
+    try:
+        for _i in out.index:
+            # Preço Atual = Preço Sugerido - Aumento Unitário quando a fonte
+            # direta não chegou à camada visual (correção aprovada anteriormente).
+            _pa = _numero_br_para_float_eirox(out.at[_i, "Preço Atual"]) if "Preço Atual" in out.columns else np.nan
+            _ps = _numero_br_para_float_eirox(out.at[_i, "Preço Sugerido"]) if "Preço Sugerido" in out.columns else np.nan
+            _au = _numero_br_para_float_eirox(out.at[_i, "Aumento Unitário"]) if "Aumento Unitário" in out.columns else np.nan
+            if (pd.isna(_pa) or _pa <= 0) and pd.notna(_ps) and pd.notna(_au) and _ps > _au >= 0:
+                out.at[_i, "Preço Atual"] = _eirox_moeda_num(_ps - _au)
+
+            # Menor preço: se a loja/data concorrente existem mas o preço não
+            # chegou ao out, recupera por EAN da base já classificada.
+            _mp = _numero_br_para_float_eirox(out.at[_i, "Menor Preço Concorrente"]) if "Menor Preço Concorrente" in out.columns else np.nan
+            if pd.isna(_mp) or _mp <= 0:
+                _ean_i = out.at[_i, "EAN"] if "EAN" in out.columns else ""
+                _src_ean = _normalizar_ean_eirox(_ean_i)
+                if isinstance(base, pd.DataFrame) and not base.empty:
+                    _ce = _eirox_first_col(base, ["EAN", "EAN (GTIN)", "GTIN"])
+                    if _ce:
+                        _mask = base[_ce].apply(_normalizar_ean_eirox).eq(_src_ean)
+                        _sub = base.loc[_mask]
+                        for _cm in ["Menor_Preco", "Menor Preço", "Menor Preço Concorrente", "Menor_Preco_Concorrente"]:
+                            if _cm in _sub.columns:
+                                _vals = pd.to_numeric(_sub[_cm], errors="coerce")
+                                _vals = _vals[_vals.notna() & (_vals > 0)]
+                                if not _vals.empty:
+                                    out.at[_i, "Menor Preço Concorrente"] = _eirox_moeda_num(float(_vals.iloc[0]))
+                                    break
+
+            # Data da Pesquisa da mesma ocorrência concorrente.
+            _data_txt = str(out.at[_i, "Data da Pesquisa"] or "").strip() if "Data da Pesquisa" in out.columns else ""
+            if _data_txt.lower() in {"", "none", "nan", "nat", "sem data na fonte"}:
+                _ean_i = out.at[_i, "EAN"] if "EAN" in out.columns else ""
+                _mp_i = _numero_br_para_float_eirox(out.at[_i, "Menor Preço Concorrente"]) if "Menor Preço Concorrente" in out.columns else None
+                _loja_i = out.at[_i, "Loja do Menor Preço"] if "Loja do Menor Preço" in out.columns else None
+                _dt_i = eirox_recuperar_data_bruta_linha(_ean_i, _mp_i, _loja_i)
+                if _dt_i:
+                    out.at[_i, "Data da Pesquisa"] = _dt_i
+    except Exception:
         pass
 
     return out
@@ -28287,6 +28461,39 @@ if "Perc_Acum" in abc_exibir.columns:
         .apply(percentual_br)
     )
 
+# V1.4.44 — correção LOCAL da Data da Pesquisa na Curva ABC.
+# Usa a ocorrência real de VENDA_TESTE; não interfere no heatmap nem no motor.
+try:
+    if isinstance(abc_exibir, pd.DataFrame) and not abc_exibir.empty:
+        if "Data_Pesquisa" not in abc_exibir.columns:
+            abc_exibir["Data_Pesquisa"] = ""
+        for _i in abc_exibir.index:
+            _atual = str(abc_exibir.at[_i, "Data_Pesquisa"] or "").strip()
+            if _atual.lower() not in {"", "none", "nan", "nat", "sem data na fonte"}:
+                continue
+            _ean = ""
+            if "EAN" in abc_exibir.columns:
+                _ean = abc_exibir.at[_i, "EAN"]
+            if (not str(_ean).strip()) and "Produto" in abc_exibir.columns:
+                _m_e = re.match(r"\s*(\d{8,14})", str(abc_exibir.at[_i, "Produto"]))
+                _ean = _m_e.group(1) if _m_e else ""
+            _preco = None
+            for _cp in ["Menor_Preco", "Menor Preço"]:
+                if _cp in abc_exibir.columns:
+                    _preco = _numero_br_para_float_eirox(abc_exibir.at[_i, _cp])
+                    break
+            _loja = None
+            for _cl in ["Farmacia_Menor_Preco", "Farmácia", "Rede_Menor_Preco_Concorrente", "Rede"]:
+                if _cl in abc_exibir.columns:
+                    _loja = abc_exibir.at[_i, _cl]
+                    if str(_loja).strip():
+                        break
+            _dt = eirox_recuperar_data_bruta_linha(_ean, _preco, _loja)
+            if _dt:
+                abc_exibir.at[_i, "Data_Pesquisa"] = _dt
+except Exception:
+    pass
+
 if "Data_Pesquisa" in abc_exibir.columns:
     abc_exibir["Data_Pesquisa"] = (
         pd.to_datetime(
@@ -29853,6 +30060,25 @@ if (
         produtos_filtrados = produtos_filtrados.rename(
             columns={col_data_pesquisa: "Data Pesquisa"}
         )
+
+        # V1.4.44 — nesta tela a data deve vir da MESMA ocorrência (EAN/preço/loja)
+        # da VENDA_TESTE. Corrige somente a apresentação desta tabela.
+        try:
+            for _i in produtos_filtrados.index:
+                _vdt = str(produtos_filtrados.at[_i, "Data Pesquisa"] or "").strip()
+                if _vdt.lower() not in {"", "none", "nan", "nat", "sem data na fonte"}:
+                    continue
+                _ean_pf = ""
+                if "Descricao_Unica" in produtos_filtrados.columns:
+                    _me = re.match(r"\s*(\d{8,14})", str(produtos_filtrados.at[_i, "Descricao_Unica"]))
+                    _ean_pf = _me.group(1) if _me else ""
+                _preco_pf = pd.to_numeric(pd.Series([produtos_filtrados.at[_i, "Preço (R$)"]]), errors="coerce").iloc[0]
+                _loja_pf = produtos_filtrados.at[_i, "Rede"] if "Rede" in produtos_filtrados.columns else None
+                _dt_pf = eirox_recuperar_data_bruta_linha(_ean_pf, _preco_pf, _loja_pf)
+                if _dt_pf:
+                    produtos_filtrados.at[_i, "Data Pesquisa"] = _dt_pf
+        except Exception:
+            pass
 
         produtos_filtrados["Data Pesquisa"] = (
             pd.to_datetime(

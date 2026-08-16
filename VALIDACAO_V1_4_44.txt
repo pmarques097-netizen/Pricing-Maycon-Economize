@@ -1,0 +1,20 @@
+V1.4.44 - correções pontuais sem alteração das regras de Pricing
+
+1. Curva ABC / Dashboard Geral
+- Data_Pesquisa recuperada diretamente da ocorrência real em VENDA_TESTE por EAN + preço + loja, com fallback por EAN + preço.
+
+2. Produtos Filtrados / Dashboard Geral
+- Data Pesquisa recuperada da mesma ocorrência real em VENDA_TESTE.
+
+3. Subir Preço
+- Preserva quantidade/recomendação.
+- Reforça Preço Atual por Preço Sugerido - Aumento Unitário somente quando o campo visual estiver vazio.
+- Recupera Menor Preço Concorrente por EAN da base já classificada.
+- Recupera Data da Pesquisa pela ocorrência real da VENDA_TESTE.
+
+Validação manual da fonte bruta:
+- EAN 7891000062661 / R$ 37,49 -> 07/08/2026
+- EAN 7896382709111 / R$ 1.765,30 -> 05/08/2026
+- EAN 7896311708314 / R$ 69,99 -> 07/08/2026
+
+AST/py_compile: OK
