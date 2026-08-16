@@ -1488,7 +1488,7 @@ def eirox_sincronizar_usuarios_cliente_login(cliente_id, grupo, usuarios_editado
         }
 
         mask_cliente = sistema["EmpresaID"].astype(str).str.strip().eq(cid)
-        mask_nao_master = ~sistema["Usuario"].astype(str).str.strip().str.lower().isin(["paulo"])
+        mask_nao_master = ~sistema["Usuario"].astype(str).str.strip().str.lower().isin(["paulo", "paulomarques", "vanderlei"])
         mask_remover = mask_cliente & mask_nao_master & ~sistema["Usuario"].astype(str).str.strip().str.lower().isin(usuarios_editor)
         sistema.loc[mask_remover, "Ativo"] = "Não"
 
@@ -1496,7 +1496,7 @@ def eirox_sincronizar_usuarios_cliente_login(cliente_id, grupo, usuarios_editado
 
         for _, row in editados.iterrows():
             usuario = str(row.get("Usuario", "")).strip().lower()
-            if not usuario or usuario == "paulo":
+            if not usuario or usuario in {"paulo", "paulomarques", "vanderlei"}:
                 continue
 
             nome = str(row.get("Nome", "")).strip() or usuario
@@ -10662,14 +10662,14 @@ EMPRESAS_ARQUIVO = Path("EMPRESAS_EIROX.csv")
 
 def usuario_master():
     """
-    Paulo é Super Administrador da plataforma.
+    Paulo e Vanderlei são usuários Master da plataforma.
     O acesso total é montado pela estrutura original do menu,
     sem duplicar páginas.
     """
     try:
         return str(
             st.session_state.get("usuario", "")
-        ).strip().lower() == "paulo"
+        ).strip().lower() in {"paulo", "paulomarques", "vanderlei"}
     except Exception:
         return False
 
@@ -11171,13 +11171,13 @@ def status_licenca_empresa(empresa_id):
 def validar_licenca_login(usuario):
     """
     Valida licença no login.
-    paulomarques não é bloqueado para suporte master.
+    Usuários Master não são bloqueados para suporte administrativo.
     """
 
     try:
         usuario = str(usuario).strip().lower()
 
-        if usuario in ["paulomarques"]:
+        if usuario in ["paulo", "paulomarques", "vanderlei"]:
             return True, ""
 
         dados = obter_dados_usuario(usuario) if "obter_dados_usuario" in globals() else None
@@ -13554,7 +13554,7 @@ def usuario_pode_ver_billing_enterprise():
     try:
         return usuario_master()
     except Exception:
-        return str(st.session_state.get("usuario", "")).strip().lower() == "paulomarques"
+        return usuario_master()
 
 
 def _billing_data_hora():
@@ -14034,7 +14034,7 @@ USUARIOS = {
     "vanderlei": {
         "senha_hash": "233fd8bd85b5d4fa7012d66a8d147b8790c1fcfe378210b9a703328e48c55278",
         "nome": "Vanderlei",
-        "perfil": "Diretoria"
+        "perfil": "Master"
     }
 }
 
@@ -14255,11 +14255,11 @@ def obter_dados_usuario(usuario):
 
 def usuario_pode_gerenciar_usuarios():
     """
-    Gestão de usuários exclusiva inicialmente para paulomarques.
+    Gestão de usuários exclusiva para usuários Master autorizados.
     """
 
     try:
-        return str(st.session_state.get("usuario", "")).strip().lower() == "paulomarques"
+        return str(st.session_state.get("usuario", "")).strip().lower() in {"paulo", "paulomarques", "vanderlei"}
     except Exception:
         return False
 
@@ -14465,8 +14465,22 @@ def carregar_log_usuarios():
 
 
 PERMISSOES_TELAS = {
+    "Master": [
+        "📊 Dashboard Geral",
+        "📊 Geral",
+        "⬆️ Subir Preço",
+        "⬇️ Baixar Preço",
+        "🤝 Negociar Compra",
+        "🌎 Mapa Geográfico de Concorrência",
+        "🏢 Dashboard Executivo",
+        "🧪 Diagnóstico"
+    ],
     "Diretoria": [
         "📊 Dashboard Geral",
+        "📊 Geral",
+        "⬆️ Subir Preço",
+        "⬇️ Baixar Preço",
+        "🤝 Negociar Compra",
         "🌎 Mapa Geográfico de Concorrência",
         "🏢 Dashboard Executivo",
         "🧪 Diagnóstico"
@@ -15002,11 +15016,13 @@ empresa_id_contexto = empresa_contexto_atual()
 nome_empresa_contexto = obter_nome_empresa(empresa_id_contexto)
 
 pode_exportar = perfil_usuario in [
+    "Master",
     "Diretoria",
     "Pricing"
 ]
 
 pode_ver_margem = perfil_usuario in [
+    "Master",
     "Diretoria",
     "Pricing"
 ]
@@ -19900,7 +19916,7 @@ if pagina == "🏁 Release Candidate":
         [
             {"Regra": "Produção congelada", "Descrição": "v1.34.0 permanece como base de produção estável."},
             {"Regra": "Homologação RC", "Descrição": "v1.36.3 RC concentra recursos comerciais antes da versão final."},
-            {"Regra": "Acesso master", "Descrição": "Módulos administrativos permanecem restritos ao usuário paulomarques."},
+            {"Regra": "Acesso master", "Descrição": "Módulos administrativos permanecem restritos aos usuários Master autorizados."},
             {"Regra": "Backup obrigatório", "Descrição": "Gerar backup completo antes de promover qualquer versão."},
             {"Regra": "Teste de cliente", "Descrição": "Validar login, menus, dados, backup, alertas e licenciamento antes de venda piloto."},
             {"Regra": "Rollback", "Descrição": "Manter backup e arquivo anterior para retorno imediato em caso de erro."}
@@ -20034,6 +20050,7 @@ if pagina == "👥 Controle de Usuários":
             )
 
             perfis = [
+                "Master",
                 "Diretoria",
                 "Pricing",
                 "Comercial",
@@ -20808,7 +20825,7 @@ if pagina == "💼 Licenciamento Real":
             {"Regra": "Bloqueio por expiração", "Status": "✅ Ativo", "Descrição": "Usuários de empresas expiradas são bloqueados no login."},
             {"Regra": "Limite de usuários", "Status": "✅ Ativo", "Descrição": "Cadastro respeita o limite do plano contratado."},
             {"Regra": "Limite de lojas", "Status": "🟡 Monitorado", "Descrição": "Quantidade de lojas é calculada e exibida para controle comercial."},
-            {"Regra": "Master support", "Status": "✅ Ativo", "Descrição": "paulomarques não é bloqueado para suporte e administração."}
+            {"Regra": "Master support", "Status": "✅ Ativo", "Descrição": "Usuários Master autorizados não são bloqueados para suporte e administração."}
         ]
     )
 
