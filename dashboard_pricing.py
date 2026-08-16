@@ -14030,6 +14030,11 @@ USUARIOS = {
         "senha_hash": "233fd8bd85b5d4fa7012d66a8d147b8790c1fcfe378210b9a703328e48c55278",
         "nome": "Paulo Marques",
         "perfil": "Diretoria"
+    },
+    "vanderlei": {
+        "senha_hash": "233fd8bd85b5d4fa7012d66a8d147b8790c1fcfe378210b9a703328e48c55278",
+        "nome": "Vanderlei",
+        "perfil": "Diretoria"
     }
 }
 
