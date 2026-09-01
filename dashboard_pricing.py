@@ -9717,7 +9717,7 @@ def renderizar_cluster_2km_mapa(mapa_filtrado_base):
             "Concorrente no raio": "#F04B43",
         }
 
-        fig_cluster = px.scatter_mapbox(
+        fig_cluster = px.scatter_map(
             pontos_mapa,
             lat="Latitude",
             lon="Longitude",
@@ -9763,7 +9763,7 @@ def renderizar_cluster_2km_mapa(mapa_filtrado_base):
                 )
 
         fig_cluster.update_layout(
-            mapbox_style="carto-darkmatter",
+            map_style="carto-darkmatter",
             paper_bgcolor="#06111f",
             plot_bgcolor="#06111f",
             font=dict(color="#EAF2FF"),
@@ -16428,7 +16428,7 @@ def eirox_v72_mapa_referencia(fig):
         fig = eirox_v70_aplicar_rotulos_plotly(fig)
 
         try:
-            fig.update_layout(mapbox_style="carto-darkmatter")
+            fig.update_layout(map_style="carto-darkmatter")
         except Exception:
             pass
         try:
@@ -24915,11 +24915,11 @@ if pagina == "🌎 Mapa Geográfico de Concorrência":
 
     if not _cliente_pontos.empty:
         fig_mapa.add_trace(
-            go.Scattermapbox(
+            go.Scattermap(
                 lat=_cliente_pontos["Latitude"],
                 lon=_cliente_pontos["Longitude"],
                 mode="markers+text",
-                marker=go.scattermapbox.Marker(
+                marker=go.scattermap.Marker(
                     size=(_cliente_pontos["Tamanho"] + 16),
                     color="#00C8FF",
                     opacity=0.22
@@ -24933,11 +24933,11 @@ if pagina == "🌎 Mapa Geográfico de Concorrência":
     for tipo, base_tipo in mapa_agrupado.groupby("Tipo_Loja"):
 
         fig_mapa.add_trace(
-            go.Scattermapbox(
+            go.Scattermap(
                 lat=base_tipo["Latitude"],
                 lon=base_tipo["Longitude"],
                 mode="markers+text",
-                marker=go.scattermapbox.Marker(
+                marker=go.scattermap.Marker(
                     size=base_tipo["Tamanho"],
                     color=base_tipo["Cor"],
                     opacity=(1.0 if tipo == "CLIENTE PRINCIPAL" else 0.72)
@@ -24950,7 +24950,7 @@ if pagina == "🌎 Mapa Geográfico de Concorrência":
 
         # Nome da loja visível diretamente no mapa.
         fig_mapa.add_trace(
-            go.Scattermapbox(
+            go.Scattermap(
                 lat=base_tipo["Latitude"],
                 lon=base_tipo["Longitude"],
                 mode="text",
@@ -24975,7 +24975,7 @@ if pagina == "🌎 Mapa Geográfico de Concorrência":
         x=0.0,
         bgcolor="rgba(0,0,0,0)"
     ),
-        mapbox=dict(
+        map=dict(
             style="carto-darkmatter",
             center=dict(lat=centro_lat, lon=centro_lon),
             zoom=11
@@ -29632,11 +29632,11 @@ if (
 
         if not _cliente_pontos_dashboard.empty:
             fig_mapa.add_trace(
-                go.Scattermapbox(
+                go.Scattermap(
                     lat=_cliente_pontos_dashboard["Latitude"],
                     lon=_cliente_pontos_dashboard["Longitude"],
                     mode="markers+text",
-                    marker=go.scattermapbox.Marker(
+                    marker=go.scattermap.Marker(
                         size=(_cliente_pontos_dashboard["Tamanho"] + 16),
                         color="#00C8FF",
                         opacity=0.22
@@ -29649,11 +29649,11 @@ if (
 
         for tipo, base_tipo in mapa_agrupado_dash.groupby("Tipo_Loja"):
             fig_mapa.add_trace(
-                go.Scattermapbox(
+                go.Scattermap(
                     lat=base_tipo["Latitude"],
                     lon=base_tipo["Longitude"],
                     mode="markers+text",
-                    marker=go.scattermapbox.Marker(
+                    marker=go.scattermap.Marker(
                         size=base_tipo["Tamanho"],
                         color=base_tipo["Cor"],
                         opacity=(1.0 if tipo == "CLIENTE PRINCIPAL" else 0.72)
@@ -29666,7 +29666,7 @@ if (
 
             # Nome da loja visível diretamente no mapa.
             fig_mapa.add_trace(
-                go.Scattermapbox(
+                go.Scattermap(
                     lat=base_tipo["Latitude"],
                     lon=base_tipo["Longitude"],
                     mode="text",
@@ -29691,7 +29691,7 @@ if (
                 x=0.0,
                 bgcolor="rgba(0,0,0,0)"
             ),
-            mapbox=dict(
+            map=dict(
                 style="carto-darkmatter",
                 center=dict(
                     lat=centro_lat,
