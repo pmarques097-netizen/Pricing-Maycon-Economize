@@ -14848,158 +14848,135 @@ def autenticar_usuario(usuario, senha):
 
 def tela_login():
 
-    # V1.4.26 — largura REAL do login. Como a execução para nesta tela,
-    # estes seletores não afetam as páginas internas do sistema.
-    st.markdown("""
-    <style id="eirox-login-v1426">
-    [data-testid="stMainBlockContainer"] {
-        max-width: 760px !important;
-        width: min(92vw, 760px) !important;
-        margin-left: auto !important;
-        margin-right: auto !important;
-        padding-top: 46px !important;
-        padding-left: 24px !important;
-        padding-right: 24px !important;
-    }
-    div[data-testid="stForm"] {
-        max-width: 620px !important;
-        width: 100% !important;
-        margin: 0 auto !important;
-        padding: 22px 24px !important;
-        border-radius: 16px !important;
-        border: 1px solid rgba(91,151,211,.30) !important;
-        background: linear-gradient(180deg,#0b2036 0%,#08192a 100%) !important;
-        box-shadow: 0 18px 44px rgba(0,0,0,.24) !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    # V1.4.35 — LOGIN SEM "FANTASMA" NO CARREGAMENTO
+    # Todo o login fica em um placeholder único. Após autenticar, o placeholder
+    # é removido antes de continuar para o dashboard, evitando que o DOM antigo
+    # permaneça visível durante o carregamento da tela interna do Streamlit.
+    _login_slot = st.empty()
 
-    # V1.4.32 — evita que o navegador exponha usuário/senha salvos na tela de apresentação.
-    # Não altera autenticação: apenas marca os campos do formulário para não reutilizar credenciais.
-    try:
-        import streamlit.components.v1 as components
-        components.html(
-            """
-            <script>
-            (function(){
-              const doc = window.parent.document;
-              function protegerLogin(){
-                const forms = doc.querySelectorAll('div[data-testid="stForm"]');
-                forms.forEach(form => {
-                  const inputs = form.querySelectorAll('input');
-                  if (inputs.length >= 2) {
-                    inputs[0].setAttribute('autocomplete','off');
-                    inputs[0].setAttribute('autocapitalize','none');
-                    inputs[0].setAttribute('spellcheck','false');
-                    inputs[1].setAttribute('autocomplete','new-password');
-                    inputs[1].setAttribute('data-lpignore','true');
-                    inputs[1].setAttribute('data-1p-ignore','true');
+    with _login_slot.container():
+        st.markdown("""
+        <style id="eirox-login-v1435-clean-transition">
+        [data-testid="stMainBlockContainer"] {
+            max-width: 760px !important;
+            width: min(92vw, 760px) !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            padding-top: 46px !important;
+            padding-left: 24px !important;
+            padding-right: 24px !important;
+        }
+        div[data-testid="stForm"] {
+            max-width: 620px !important;
+            width: 100% !important;
+            margin: 0 auto !important;
+            padding: 22px 24px !important;
+            border-radius: 16px !important;
+            border: 1px solid rgba(91,151,211,.30) !important;
+            background: linear-gradient(180deg,#0b2036 0%,#08192a 100%) !important;
+            box-shadow: 0 18px 44px rgba(0,0,0,.24) !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # Protege os campos contra preenchimento automático do navegador.
+        try:
+            import streamlit.components.v1 as components
+            components.html(
+                """
+                <script>
+                (function(){
+                  const doc = window.parent.document;
+                  function protegerLogin(){
+                    const forms = doc.querySelectorAll('div[data-testid="stForm"]');
+                    forms.forEach(form => {
+                      const inputs = form.querySelectorAll('input');
+                      if (inputs.length >= 2) {
+                        inputs[0].setAttribute('autocomplete','off');
+                        inputs[0].setAttribute('autocapitalize','none');
+                        inputs[0].setAttribute('spellcheck','false');
+                        inputs[1].setAttribute('autocomplete','new-password');
+                        inputs[1].setAttribute('data-lpignore','true');
+                        inputs[1].setAttribute('data-1p-ignore','true');
+                      }
+                    });
                   }
-                });
-              }
-              protegerLogin();
-              setTimeout(protegerLogin, 150);
-              setTimeout(protegerLogin, 600);
-            })();
-            </script>
-            """,
-            height=0,
-            width=0,
-        )
-    except Exception:
-        pass
+                  protegerLogin();
+                  setTimeout(protegerLogin, 150);
+                  setTimeout(protegerLogin, 600);
+                })();
+                </script>
+                """,
+                height=0,
+                width=0,
+            )
+        except Exception:
+            pass
 
-    # V1.4.30 — logo oficial no login, sem alterar autenticação.
-    try:
-        _login_logo_cols = st.columns([1.0, 1.55, 1.0])
-        with _login_logo_cols[1]:
-            st.image("logo eirox.png", use_container_width=True)
-    except Exception:
-        pass
+        try:
+            _login_logo_cols = st.columns([1.0, 1.55, 1.0])
+            with _login_logo_cols[1]:
+                st.image("logo eirox.png", use_container_width=True)
+        except Exception:
+            pass
 
-    st.markdown(
-        """
-        <div style="text-align:center; margin-top:2px; margin-bottom:12px;">
-            <h1 style="font-size:1.70rem;line-height:1.08;margin:0 0 7px 0;">Eirox Pricing</h1>
-            <div style="font-size:1.03rem;font-weight:400;color:#B7C7D8;line-height:1.2;">
-                Ferramenta de Inteligência de Pricing
+        st.markdown(
+            """
+            <div style="text-align:center; margin-top:2px; margin-bottom:12px;">
+                <h1 style="font-size:1.70rem;line-height:1.08;margin:0 0 7px 0;">Eirox Pricing</h1>
+                <div style="font-size:1.03rem;font-weight:400;color:#B7C7D8;line-height:1.2;">
+                    Inteligência de Pricing para Drogarias
+                </div>
             </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    with st.form("form_login"):
-
-        usuario = st.text_input(
-            "Usuário"
+            """,
+            unsafe_allow_html=True
         )
 
-        senha = st.text_input(
-            "Senha",
-            type="password"
-        )
+        with st.form("form_login"):
+            usuario = st.text_input("Usuário")
+            senha = st.text_input("Senha", type="password")
+            entrar = st.form_submit_button("Entrar", use_container_width=True)
 
-        entrar = st.form_submit_button(
-            "Entrar",
-            use_container_width=True
-        )
+        if entrar:
+            if autenticar_usuario(usuario, senha):
+                usuario_key = str(usuario).strip().lower()
+                licenca_ok, licenca_msg = validar_licenca_login(usuario_key)
 
-    if entrar:
+                if not licenca_ok:
+                    st.error(licenca_msg)
+                    return False
 
-        if autenticar_usuario(
-            usuario,
-            senha
-        ):
+                dados_login = obter_dados_usuario(usuario_key)
+                st.session_state["logado"] = True
+                st.session_state["usuario"] = usuario_key
+                st.session_state["nome_usuario"] = dados_login.get("Nome", usuario_key) if dados_login else usuario_key
+                st.session_state["perfil_usuario"] = dados_login.get("Perfil", "Consulta") if dados_login else "Consulta"
+                st.session_state["empresa_id_usuario"] = dados_login.get("EmpresaID", "1") if dados_login else "1"
+                st.session_state["empresa_id_contexto"] = st.session_state["empresa_id_usuario"]
 
-            usuario_key = str(usuario).strip().lower()
+                iniciar_auditoria_sessao(
+                    usuario_key,
+                    st.session_state["nome_usuario"],
+                    st.session_state["perfil_usuario"]
+                )
+                salvar_log_acesso("Login", "Sistema", "Usuário autenticado com sucesso")
+                registrar_alerta_login(
+                    usuario_key,
+                    st.session_state["nome_usuario"],
+                    st.session_state["perfil_usuario"]
+                )
 
-            licenca_ok, licenca_msg = validar_licenca_login(usuario_key)
-
-            if not licenca_ok:
-                st.error(licenca_msg)
-                return
-
-            dados_login = obter_dados_usuario(usuario_key)
-
-            st.session_state["logado"] = True
-            st.session_state["usuario"] = usuario_key
-            st.session_state["nome_usuario"] = dados_login.get("Nome", usuario_key) if dados_login else usuario_key
-            st.session_state["perfil_usuario"] = dados_login.get("Perfil", "Consulta") if dados_login else "Consulta"
-            st.session_state["empresa_id_usuario"] = dados_login.get("EmpresaID", "1") if dados_login else "1"
-            st.session_state["empresa_id_contexto"] = st.session_state["empresa_id_usuario"]
-
-            iniciar_auditoria_sessao(
-                usuario_key,
-                st.session_state["nome_usuario"],
-                st.session_state["perfil_usuario"]
-            )
-
-            salvar_log_acesso(
-                "Login",
-                "Sistema",
-                "Usuário autenticado com sucesso"
-            )
-
-            registrar_alerta_login(
-                usuario_key,
-                st.session_state["nome_usuario"],
-                st.session_state["perfil_usuario"]
-            )
-
-            st.rerun()
-
-        else:
+                # Remove o formulário ANTES de o dashboard começar a ser desenhado.
+                _login_slot.empty()
+                return True
 
             motivo = st.session_state.pop("login_bloqueado_motivo", "")
-
             if motivo:
                 st.error(motivo)
             else:
-                st.error(
-                    "Usuário ou senha inválidos."
-                )
+                st.error("Usuário ou senha inválidos.")
 
+    return False
 
 def exigir_login():
 
@@ -15009,8 +14986,9 @@ def exigir_login():
 
     if not st.session_state["logado"]:
 
-        tela_login()
-        st.stop()
+        login_concluido = tela_login()
+        if not login_concluido:
+            st.stop()
 
 
 def logout():
