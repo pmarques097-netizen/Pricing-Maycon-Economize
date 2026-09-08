@@ -1108,8 +1108,16 @@ def construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque
             )
             agg = agg.merge(est, on="EAN", how="left")
 
+        # Preço Atual = somente última venda transacional.
         agg["Preco_Atual"] = agg["Preco_Atual_Venda"] if "Preco_Atual_Venda" in agg.columns else np.nan
-        # Nunca completar o preço do Principal com média de mercado.
+        # Referência mensal preserva o motor quando a fonte ainda não possui
+        # venda transacional; nunca substitui ou é exibida como Preço Atual.
+        if "Venda_Preco_Antigo" in agg.columns and "Qtd_Vendida_Mes_Anterior" in agg.columns:
+            _q_ref = pd.to_numeric(agg["Qtd_Vendida_Mes_Anterior"], errors="coerce").replace(0, np.nan)
+            _v_ref = pd.to_numeric(agg["Venda_Preco_Antigo"], errors="coerce")
+            agg["Preco_Referencia_Calculo"] = (_v_ref / _q_ref).where((_v_ref > 0) & (_q_ref > 0))
+        else:
+            agg["Preco_Referencia_Calculo"] = np.nan
 
         if "Custo" not in agg.columns:
             agg["Custo"] = np.nan
@@ -8693,6 +8701,12 @@ def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
     )
     vendas = vendas.merge(_ult_venda, on="EAN", how="left")
     vendas = vendas.rename(columns={"Preco_Ultima_Venda": "Preco_Atual"})
+    if "Venda_Preco_Antigo" in vendas.columns:
+        _q_ref = pd.to_numeric(vendas["Qtd_Vendida_Mes_Anterior"], errors="coerce").replace(0, np.nan)
+        _v_ref = pd.to_numeric(vendas["Venda_Preco_Antigo"], errors="coerce")
+        vendas["Preco_Referencia_Calculo"] = (_v_ref / _q_ref).where((_v_ref > 0) & (_q_ref > 0))
+    else:
+        vendas["Preco_Referencia_Calculo"] = np.nan
     vendas = vendas[vendas["Qtd_Vendida_Mes_Anterior"] > 0].copy()
     if "Venda_Preco_Antigo" not in vendas.columns:
         vendas["Venda_Preco_Antigo"] = vendas["Qtd_Vendida_Mes_Anterior"] * vendas["Preco_Atual"]
@@ -17889,11 +17903,29 @@ def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
             c_custo = "_Custo_Unitario_Eirox"
 
     d["Preço_Atual_Eirox"] = _eirox_num(d[c_preco]) if c_preco else np.nan
+    c_ref_calc = _eirox_first_col(d, [
+        "Preco_Referencia_Calculo", "Preço Referência Cálculo",
+        "Preco Referencia Calculo", "Preco_Referencia_Mensal"
+    ])
+    d["Preço_Referencia_Calculo_Eirox"] = _eirox_num(d[c_ref_calc]) if c_ref_calc else np.nan
+    d["Preço_Base_Calculo_Eirox"] = d["Preço_Atual_Eirox"].where(
+        d["Preço_Atual_Eirox"].notna() & (d["Preço_Atual_Eirox"] > 0),
+        d["Preço_Referencia_Calculo_Eirox"]
+    )
+    d["Fonte_Preço_Eirox"] = np.where(
+        d["Preço_Atual_Eirox"].notna() & (d["Preço_Atual_Eirox"] > 0),
+        "ÚLTIMA VENDA",
+        np.where(
+            d["Preço_Referencia_Calculo_Eirox"].notna() & (d["Preço_Referencia_Calculo_Eirox"] > 0),
+            "REFERÊNCIA MENSAL",
+            "SEM PREÇO"
+        )
+    )
     d["Preço_Mercado_Eirox"] = _eirox_num(d[c_mercado]) if c_mercado else np.nan
     d["Custo_Unitario_Eirox"] = _eirox_num(d[c_custo]) if c_custo else np.nan
     d["Qtd_Vendida_Eirox"] = _eirox_num(d[c_qtd]).fillna(0) if c_qtd else 0
 
-    p = d["Preço_Atual_Eirox"]
+    p = d["Preço_Base_Calculo_Eirox"]
     m = d["Preço_Mercado_Eirox"]
     c = d["Custo_Unitario_Eirox"]
 
@@ -17947,7 +17979,7 @@ def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
     # Ganho Unitário x Quantidade = Ganho Produto.
     d["Ganho_Lucro_Unitario_Eirox"] = (
         pd.to_numeric(d["Preço_Sugerido_Eirox"], errors="coerce")
-        - pd.to_numeric(d["Preço_Atual_Eirox"], errors="coerce")
+        - pd.to_numeric(d["Preço_Base_Calculo_Eirox"], errors="coerce")
     ).clip(lower=0).fillna(0).round(2)
 
     d["Qtd_Vendida_Eirox"] = (
@@ -19031,7 +19063,7 @@ def eirox_v63_subidas_validas(base):
     if not isinstance(motor, pd.DataFrame) or motor.empty:
         return pd.DataFrame()
 
-    p = pd.to_numeric(motor["Preço_Atual_Eirox"], errors="coerce")
+    p = pd.to_numeric(motor["Preço_Base_Calculo_Eirox"], errors="coerce")
     mercado = pd.to_numeric(motor["Preço_Mercado_Eirox"], errors="coerce")
     sugerido = pd.to_numeric(motor["Preço_Sugerido_Eirox"], errors="coerce")
 
@@ -19049,7 +19081,7 @@ def eirox_v63_subidas_validas(base):
     if m.empty:
         return m
 
-    p = pd.to_numeric(m["Preço_Atual_Eirox"], errors="coerce")
+    p = pd.to_numeric(m["Preço_Base_Calculo_Eirox"], errors="coerce")
     sugerido = pd.to_numeric(m["Preço_Sugerido_Eirox"], errors="coerce")
 
     m["Ganho_Lucro_Unitario_Eirox"] = (sugerido - p).clip(lower=0).fillna(0)
@@ -19329,8 +19361,19 @@ def eirox_v63_tabela_subidas(base):
         out["Laboratório"] = motor[c_lab].astype(str)
 
     out["Ação"] = "SUBIR PREÇO"
-    out["Flag Preço"] = "🚩 PREÇO CALCULADO"
-    out["Preço Atual"] = motor["Preço_Atual_Eirox"].apply(_eirox_moeda_num)
+    out["Flag Preço"] = motor.get(
+        "Fonte_Preço_Eirox", pd.Series("SEM PREÇO", index=motor.index)
+    ).map({
+        "ÚLTIMA VENDA": "✅ ÚLTIMA VENDA",
+        "REFERÊNCIA MENSAL": "⚠️ REFERÊNCIA MENSAL",
+        "SEM PREÇO": "⚠️ SEM PREÇO"
+    }).fillna("⚠️ SEM PREÇO")
+    out["Preço Atual"] = motor["Preço_Atual_Eirox"].apply(
+        lambda x: _eirox_moeda_num(x) if pd.notna(x) and float(x) > 0 else ""
+    )
+    out["Preço Ref. Cálculo"] = motor["Preço_Base_Calculo_Eirox"].apply(
+        lambda x: _eirox_moeda_num(x) if pd.notna(x) and float(x) > 0 else ""
+    )
     out["Preço Mercado"] = motor["Preço_Mercado_Eirox"].apply(_eirox_moeda_num)
 
     if "Menor Preço Concorrente" in motor.columns:
@@ -19426,10 +19469,6 @@ def eirox_v63_tabela_subidas(base):
                     return txt in ("", "none", "nan", "nat", "r$ nan")
 
                 for idx in out.index:
-                    if "Preço Atual" in out.columns and _v1418_vazio(out.at[idx, "Preço Atual"]):
-                        if pd.notna(_pa.iloc[idx]) and _pa.iloc[idx] > 0:
-                            out.at[idx, "Preço Atual"] = _eirox_moeda_num(_pa.iloc[idx])
-
                     if "Menor Preço Concorrente" in out.columns and _v1418_vazio(out.at[idx, "Menor Preço Concorrente"]):
                         if pd.notna(_mp.iloc[idx]) and _mp.iloc[idx] > 0:
                             out.at[idx, "Menor Preço Concorrente"] = _eirox_moeda_num(_mp.iloc[idx])
@@ -19444,18 +19483,7 @@ def eirox_v63_tabela_subidas(base):
                         if "Preço Mercado" in out.columns and not _v1418_vazio(out.at[idx, "Preço Mercado"]):
                             out.at[idx, "Preço Sugerido"] = out.at[idx, "Preço Mercado"]
 
-                # Fallback matemático somente para Preço Atual: o próprio
-                # relatório já possui Preço Sugerido e Aumento Unitário.
-                for idx in out.index:
-                    if "Preço Atual" in out.columns and _v1418_vazio(out.at[idx, "Preço Atual"]):
-                        try:
-                            ps = _numero_br_para_float_eirox(out.at[idx, "Preço Sugerido"])
-                            gu = _numero_br_para_float_eirox(out.at[idx, "Aumento Unitário"])
-                            calc = float(ps) - float(gu)
-                            if calc > 0:
-                                out.at[idx, "Preço Atual"] = _eirox_moeda_num(calc)
-                        except Exception:
-                            pass
+
     except Exception:
         pass
 
