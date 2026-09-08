@@ -28836,10 +28836,16 @@ try:
 
     if _eirox_indice_v161 >= 70:
         _eirox_faixa_indice_v161 = "🟢 Alta oportunidade"
+        _eirox_flag_indice_v162 = "🟢 ÍNDICE ALTO"
+        _eirox_flag_classe_v162 = "alto"
     elif _eirox_indice_v161 >= 40:
         _eirox_faixa_indice_v161 = "🟡 Oportunidade relevante"
+        _eirox_flag_indice_v162 = "🟡 ÍNDICE MÉDIO"
+        _eirox_flag_classe_v162 = "medio"
     else:
         _eirox_faixa_indice_v161 = "🔴 Baixo impacto"
+        _eirox_flag_indice_v162 = "🔴 ÍNDICE BAIXO"
+        _eirox_flag_classe_v162 = "baixo"
 
     st.markdown(
         f"""
@@ -28889,6 +28895,21 @@ try:
             text-align:right;
             margin-top:7px;
         }}
+        .eirox-index-flag-v162 {{
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            margin-top:9px;
+            padding:6px 11px;
+            border-radius:999px;
+            font-size:11px;
+            font-weight:850;
+            letter-spacing:.05em;
+            border:1px solid rgba(255,255,255,.12);
+            background:rgba(255,255,255,.06);
+            color:#f6f9ff;
+            white-space:nowrap;
+        }}
         </style>
         <div class="eirox-index-card-v161">
             <div>
@@ -28901,6 +28922,7 @@ try:
             <div>
                 <div class="eirox-index-value-v161">{_eirox_indice_v161}</div>
                 <div class="eirox-index-band-v161">{_eirox_faixa_indice_v161}</div>
+                <div class="eirox-index-flag-v162">{_eirox_flag_indice_v162}</div>
             </div>
         </div>
         """,
@@ -28917,6 +28939,7 @@ try:
 - Rentabilidade média usada: **{_eirox_margem_indice_v161:.2f}**
 - Potencial de Captura atual: **{moeda_br(_eirox_potencial_indice_v161)}**
 - Índice calculado: **{_eirox_indice_v161}**
+- Flag calculada: **{_eirox_flag_indice_v162}**
 
 Faixas:
 - 🟢 Acima de 70 pontos: alta oportunidade.
