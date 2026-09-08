@@ -28853,10 +28853,10 @@ try:
 except Exception:
     pass
 
-# V1.4.60 — seletor de visão do Dashboard Geral.
+# V1.4.64 — Dashboard Geral com 3 flags/visões.
 _eirox_visao_dashboard_v160 = st.radio(
     "Visão do Dashboard",
-    ["📊 Visão Executiva", "📈 Motor de Rentabilidade"],
+    ["📊 Visão Executiva", "📈 Motor de Rentabilidade", "🤖 Índice Eirox Calculado"],
     horizontal=True,
     key="eirox_visao_dashboard_v160",
     label_visibility="collapsed"
@@ -28864,6 +28864,83 @@ _eirox_visao_dashboard_v160 = st.radio(
 
 if _eirox_visao_dashboard_v160 == "📈 Motor de Rentabilidade":
     eirox_v160_render_motor_rentabilidade(df_filtrado.copy())
+    st.stop()
+
+if _eirox_visao_dashboard_v160 == "🤖 Índice Eirox Calculado":
+    st.markdown(
+        f"""
+        <div style="
+            border:1px solid rgba(117,73,191,.72);
+            border-radius:22px;
+            padding:24px 26px;
+            margin-top:10px;
+            background:
+                radial-gradient(circle at 92% 18%, rgba(174,88,255,.16), transparent 32%),
+                linear-gradient(135deg,#151b3f 0%,#0c1f39 100%);
+            box-shadow:0 8px 22px rgba(0,0,0,.16);
+        ">
+            <div style="font-size:12px;font-weight:800;letter-spacing:.12em;color:#bda8ff;text-transform:uppercase;">
+                Índice de Oportunidade Eirox
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:20px;margin-top:8px;">
+                <div>
+                    <div style="font-size:28px;font-weight:900;color:#f5f8ff;">🤖 Índice Eirox Calculado</div>
+                    <div style="margin-top:8px;color:#91a8c2;font-size:13px;">
+                        60% Rentabilidade Atual + 40% Potencial de Captura
+                    </div>
+                </div>
+                <div style="text-align:right;">
+                    <div style="font-size:46px;font-weight:950;color:#d8c2ff;line-height:1;">{_eirox_indice_v161}</div>
+                    <div style="
+                        display:inline-block;margin-top:10px;padding:6px 12px;border-radius:999px;
+                        background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.10);
+                        color:#f5f8ff;font-size:12px;font-weight:850;
+                    ">{_eirox_flag_indice_v162}</div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    c_ind1, c_ind2, c_ind3 = st.columns(3)
+    c_ind1.metric(
+        "Rentabilidade Atual",
+        f"{_eirox_margem_indice_v161:.2f}%".replace(".", ",")
+    )
+    c_ind2.metric(
+        "Potencial de Captura",
+        moeda_br(_eirox_potencial_indice_v161)
+    )
+    c_ind3.metric(
+        "Índice Eirox",
+        _eirox_indice_v161
+    )
+
+    st.markdown("### Composição do Índice")
+    st.markdown(
+        f"""
+**Rentabilidade Atual × 60%**
+
+{_eirox_margem_indice_v161:.2f} × 60% = **{(_eirox_margem_indice_v161 * 0.60):.2f}**
+
+**Potencial de Captura ÷ 1.000 × 40%**
+
+{moeda_br(_eirox_potencial_indice_v161)} ÷ 1.000 × 40% = **{((_eirox_potencial_indice_v161 / 1000.0) * 0.40):.2f}**
+
+### Resultado
+
+**Índice Eirox = {_eirox_indice_v161}**
+
+**Flag = {_eirox_flag_indice_v162}**
+
+Faixas de classificação:
+
+- 🟢 **70 ou mais:** Índice Alto
+- 🟡 **40 a 69:** Índice Médio
+- 🔴 **Abaixo de 40:** Índice Baixo
+        """
+    )
     st.stop()
 
 try:
