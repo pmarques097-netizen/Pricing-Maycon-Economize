@@ -4693,16 +4693,27 @@ def eirox_montar_cliente_x_concorrente(base_preparada, rede_concorrente):
 
 
 def eirox_brl(valor, vazio="—"):
-    """Formata valor monetário no padrão brasileiro: R$ 1.234,56."""
+    """Moeda pt-BR; nunca converte ausência em zero."""
     try:
-        if valor is None or (isinstance(valor, float) and np.isnan(valor)):
+        if valor is None or pd.isna(valor):
             return vazio
+        if isinstance(valor, str):
+            s = valor.strip().replace("R$", "").replace("\\u00a0", "").replace(" ", "")
+            if not s or s.lower() in {"none", "nan", "nat", "null"}:
+                return vazio
+            if "," in s and "." in s:
+                s = s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
+            elif "," in s:
+                s = s.replace(",", ".")
+            valor = s
         n = float(valor)
-        s = f"{n:,.2f}"
-        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        if not np.isfinite(n):
+            return vazio
+        s = f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         return f"R$ {s}"
-    except Exception:
+    except (ValueError, TypeError, OverflowError):
         return vazio
+
 
 
 def eirox_percentual_br(valor, casas=2, vazio="—"):
@@ -7643,48 +7654,14 @@ VERSAO_APP = "Enterprise v1.4.47"
 # --------------------------------------------------
 
 def moeda_br(valor):
+    return eirox_brl(valor, vazio="")
 
-    try:
-
-        if pd.isna(valor):
-            return ""
-
-        return (
-            f"{eirox_brl(float(valor))}"
-            .replace(",", "X")
-            .replace(".", ",")
-            .replace("X", ".")
-        )
-
-    except Exception:
-        return ""
 
 
 def moeda_br_kpi(valor):
+    """Mostra o valor completo, sem abreviação MM ou perda de centavos."""
+    return eirox_brl(valor, vazio="—")
 
-    """
-    Formata moeda para KPI sem cortar o valor no card.
-    Mantém o padrão brasileiro e usa MM quando o valor passa de 1 milhão.
-    """
-
-    try:
-        if pd.isna(valor):
-            return ""
-
-        valor = float(valor)
-
-        if abs(valor) >= 1_000_000:
-            return (
-                f"{eirox_brl(valor / 1_000_000)} MM"
-                .replace(",", "X")
-                .replace(".", ",")
-                .replace("X", ".")
-            )
-
-        return moeda_br(valor)
-
-    except Exception:
-        return moeda_br(valor)
 
 
 def numero_br(valor):
@@ -8181,7 +8158,7 @@ def mostrar_explicacao_visao_eirox(nome_visao):
                     "Produtos = quantidade total de EANs/produtos analisados.",
                     "Margem Média = média da margem atual dos produtos.",
                     "Lucro Médio = média do lucro unitário calculado.",
-                    "Potencial de Captura = soma do ganho potencial identificado na base.",
+                    "Potencial de Captura = soma das oportunidades válidas de subida, sem misturar redução de custo ou impacto de baixa.",
                     "Preço Médio = média dos preços atuais ou pesquisados.",
                     "Laboratórios = quantidade de laboratórios distintos na base."
                 ]
@@ -17236,12 +17213,8 @@ def _eirox_first_col(df, nomes):
     return None
 
 def _eirox_moeda_num(v):
-    try:
-        if pd.isna(v):
-            return ""
-        return f"{eirox_brl(float(v))}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except Exception:
-        return ""
+    return eirox_brl(v, vazio="")
+
 
 def _eirox_pct_num(v):
     try:
@@ -17591,63 +17564,11 @@ def eirox_qd_recuperar_cadastro(base):
 
 
 def eirox_fin_padronizar_ganho(df):
-    """
-    Padroniza ganhos financeiros antes de exibição/exportação.
-    Mantém exatamente:
-    Ganho Produto = Ganho Unitário x Quantidade.
-    """
+    """Normalização visual segura: não recalcula nem substitui ganhos."""
     if not isinstance(df, pd.DataFrame) or df.empty:
         return df
+    return df.copy()
 
-    out = df.copy()
-
-    # possíveis nomes finais usados nas tabelas/exportações
-    ganho_unit_cols = [
-        "Ganho Unitário", "Ganho Unitario",
-        "Ganho_Lucro_Unitario_Eirox"
-    ]
-    qtd_cols = [
-        "Qtd Vendida", "Qtd_Vendida_Eirox",
-        "Qtd Vendida Mês Anterior", "Qtd_Vendida_Mes_Anterior",
-        "Quantidade Vendida"
-    ]
-    ganho_prod_cols = [
-        "Ganho Produto", "Ganho Potencial",
-        "Ganho_Lucro_Potencial_Eirox"
-    ]
-
-    c_gu = next((c for c in ganho_unit_cols if c in out.columns), None)
-    c_qt = next((c for c in qtd_cols if c in out.columns), None)
-    c_gp = next((c for c in ganho_prod_cols if c in out.columns), None)
-
-    if c_gu:
-        out[c_gu] = pd.to_numeric(out[c_gu], errors="coerce").fillna(0).round(2)
-
-    if c_qt:
-        out[c_qt] = pd.to_numeric(out[c_qt], errors="coerce").fillna(0)
-
-    if c_gu and c_qt:
-        calculado = (
-            pd.to_numeric(out[c_gu], errors="coerce").fillna(0)
-            * pd.to_numeric(out[c_qt], errors="coerce").fillna(0)
-        ).round(2)
-
-        if c_gp:
-            out[c_gp] = calculado
-        else:
-            out["Ganho Produto"] = calculado
-
-    # arredondamento das colunas financeiras usuais
-    for c in [
-        "Preço Atual", "Preço Sugerido", "Menor Preço Concorrente",
-        "Custo Unitário", "Custo Unitario",
-        "Preço_Atual_Eirox", "Preço_Sugerido_Eirox",
-        "Custo_Unitario_Eirox", "Impacto_Financeiro_Eirox"
-    ]:
-        if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce").round(2)
-
-    return out
 
 
 
@@ -18407,12 +18328,13 @@ def _v143_original_eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MI
 
     if c_ganho:
         ganho_exist = _eirox_num(d[c_ganho]).fillna(0).abs()
-        d["Impacto_Financeiro_Eirox"] = np.maximum(impacto_volume.fillna(0), ganho_exist)
+        # V1.4.52: histórico não pode inflar o impacto corrente.
+        d["Impacto_Financeiro_Eirox"] = impacto_volume.fillna(0)
     else:
         d["Impacto_Financeiro_Eirox"] = impacto_volume.fillna(0)
 
     mask_neg = d["Recomendacao_Central"].eq("NEGOCIAR COMPRA")
-    impacto_neg = d["Reducao_Custo_Necessaria_Eirox"] * d["Qtd_Vendida_Eirox"].replace(0, 1)
+    impacto_neg = d["Reducao_Custo_Necessaria_Eirox"] * d["Qtd_Vendida_Eirox"].clip(lower=0)
     d.loc[mask_neg, "Impacto_Financeiro_Eirox"] = impacto_neg[mask_neg]
 
 
@@ -18498,6 +18420,61 @@ def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
 
 
 
+def eirox_v152_auditoria_financeira(base):
+    """Audita valores sem modificar a base ou inventar dados ausentes."""
+    if not isinstance(base, pd.DataFrame) or base.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    d = eirox_motor_oportunidades(base)
+    if d.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    out = pd.DataFrame(index=d.index)
+    ce = _eirox_first_col(d, ["EAN", "EAN (GTIN)", "GTIN"])
+    out["EAN"] = d[ce].astype(str) if ce else ""
+    out["Ação"] = d["Recomendacao_Central"].astype(str)
+    out["Fonte Preço"] = d.get("Fonte_Preço_Eirox", "")
+    for destino, origem in [
+        ("Preço Atual", "Preço_Atual_Eirox"),
+        ("Preço Ref. Cálculo", "Preço_Base_Calculo_Eirox"),
+        ("Preço Sugerido", "Preço_Sugerido_Eirox"),
+        ("Custo Unitário", "Custo_Unitario_Eirox"),
+        ("Qtd Vendida", "Qtd_Vendida_Eirox"),
+        ("Ganho Registrado", "Ganho_Lucro_Potencial_Eirox"),
+        ("Impacto Registrado", "Impacto_Financeiro_Eirox"),
+    ]:
+        out[destino] = pd.to_numeric(d.get(origem, pd.Series(np.nan,index=d.index)),errors="coerce")
+    p=out["Preço Atual"]
+    r=out["Preço Ref. Cálculo"]
+    s=out["Preço Sugerido"]
+    c=out["Custo Unitário"]
+    q=out["Qtd Vendida"]
+    subir=out["Ação"].eq("SUBIR PREÇO")
+    valido=subir & p.gt(0) & s.gt(p) & c.notna() & c.ge(0) & q.gt(0)
+    out["Ganho Conferido"] = np.nan
+    out.loc[valido,"Ganho Conferido"] = (
+        (s[valido]-p[valido]).round(2)*q[valido]
+    ).round(2)
+    out["Diferença Ganho"] = out["Ganho Registrado"]-out["Ganho Conferido"]
+    out["Situação"] = "OK"
+    out.loc[p.isna() | p.le(0),"Situação"] = "SEM PREÇO ATUAL"
+    out.loc[c.isna() | c.lt(0),"Situação"] = "CUSTO NÃO VALIDADO"
+    out.loc[q.isna() | q.lt(0),"Situação"] = "QUANTIDADE NÃO VALIDADA"
+    out.loc[subir & q.eq(0),"Situação"] = "SEM VOLUME PARA PROJEÇÃO"
+    out.loc[subir & p.gt(0) & s.gt(0) & s.le(p),"Situação"] = "SUGESTÃO NÃO SUPERA PREÇO"
+    out.loc[subir & p.gt(0) & r.gt(0) & (p-r).abs().gt(0.005),"Situação"] = "PREÇO EXIBIDO DIFERE DA BASE"
+    out.loc[valido & out["Diferença Ganho"].abs().gt(0.011),"Situação"] = "GANHO DIVERGENTE"
+    out.loc[subir & out["Ganho Conferido"].notna() & out["Ganho Registrado"].isna(),"Situação"] = "GANHO AUSENTE"
+    out["Duplicidade EAN"] = out["EAN"].ne("") & out["EAN"].duplicated(keep=False)
+    resumo = out.groupby("Ação",dropna=False).agg(
+        Registros=("EAN","size"),
+        EANs=("EAN","nunique"),
+        Ganho_Registrado=("Ganho Registrado","sum"),
+        Ganho_Conferido=("Ganho Conferido","sum"),
+        Impacto_Registrado=("Impacto Registrado","sum"),
+        Divergencias=("Situação",lambda s: int(s.ne("OK").sum())),
+        EANs_Duplicados=("Duplicidade EAN","sum"),
+    ).reset_index()
+    return out.reset_index(drop=True), resumo
+
 def eirox_resumo_oportunidades(base):
     d = eirox_motor_oportunidades(base)
     if d.empty:
@@ -18515,7 +18492,7 @@ def eirox_resumo_oportunidades(base):
         "subir": int(rec.eq("SUBIR PREÇO").sum()),
         "baixar": int(rec.eq("BAIXAR PREÇO").sum()),
         "negociar": int(rec.eq("NEGOCIAR COMPRA").sum()),
-        "captura": float(d.loc[rec.eq("SUBIR PREÇO"), "Impacto_Financeiro_Eirox"].fillna(0).sum()),
+        "captura": float(d.loc[rec.eq("SUBIR PREÇO"), "Ganho_Lucro_Potencial_Eirox"].fillna(0).sum()),
         "reducao_custo": float(d.loc[rec.eq("NEGOCIAR COMPRA"), "Impacto_Financeiro_Eirox"].fillna(0).sum()),
         "margem_projetada": float(margem_s.dropna().mean()) if margem_s.notna().any() else np.nan
     }
@@ -19789,20 +19766,6 @@ def eirox_v147_corrigir_lista_subir_final(tab):
                 if "Data da Pesquisa" in out.columns and atom.get("data"):
                     out.at[idx, "Data da Pesquisa"] = atom["data"]
 
-        # Custo unitário: recuperado de uma identidade já exibida no relatório.
-        # Margem Atual = (Preço Atual - Custo) / Preço Atual.
-        cu = _num(out.at[idx, "Custo Unitário"]) if "Custo Unitário" in out.columns else np.nan
-        if (pd.isna(cu) or cu <= 0) and pd.notna(pa) and pa > 0 and "Margem Atual" in out.columns:
-            mg = _num(out.at[idx, "Margem Atual"])
-            if pd.notna(mg):
-                # Percentuais chegam como 30,9 / -4,2 / 100,0.
-                # Normaliza tanto margens positivas quanto negativas.
-                if abs(mg) > 1:
-                    mg = mg / 100.0
-                if -10 < mg <= 1:
-                    cu_calc = pa * (1.0 - mg)
-                    if cu_calc >= 0:
-                        out.at[idx, "Custo Unitário"] = _eirox_moeda_num(cu_calc)
 
 
     # V1.4.49 — barreira visual final com prioridade VENDA_TESTE e
@@ -19817,10 +19780,8 @@ def eirox_v147_corrigir_lista_subir_final(tab):
             _data = _keys.map(_lk["Data_Ultima_Venda"])
             _mes = _keys.map(_lk["Mes_Fechado_Referencia"])
 
-            out["Preço Atual"] = [
-                _eirox_moeda_num(v) if pd.notna(v) and float(v) > 0 else ""
-                for v in _preco
-            ]
+            # O preço do motor é a fonte da tela e do ganho.
+            # A consulta à fonte serve apenas para conferir a procedência.
             out["Flag Preço"] = _fonte.map({
                 "ÚLTIMA VENDA": "✅ ÚLTIMA VENDA",
                 "ÚLTIMO MÊS FECHADO": "🟡 ÚLTIMO MÊS FECHADO",
@@ -19844,23 +19805,7 @@ def eirox_v147_corrigir_lista_subir_final(tab):
                 for fonte, mes in zip(_fonte, _mes)
             ]
 
-            # Recuperação final do custo somente se ainda estiver ausente.
-            # A margem foi calculada pelo próprio motor com o mesmo Preço Atual,
-            # portanto custo = preço * (1 - margem) recompõe o custo usado
-            # naquela classificação, sem alterar recomendação ou ganho.
-            if "Custo Unitário" in out.columns and "Margem Atual" in out.columns:
-                for _idx_v149 in out.index:
-                    _cu_v149 = _num(out.at[_idx_v149, "Custo Unitário"])
-                    if pd.isna(_cu_v149) or _cu_v149 < 0:
-                        _pa_v149 = _num(out.at[_idx_v149, "Preço Atual"])
-                        _mg_v149 = _num(out.at[_idx_v149, "Margem Atual"])
-                        if pd.notna(_pa_v149) and _pa_v149 > 0 and pd.notna(_mg_v149):
-                            if abs(_mg_v149) > 1:
-                                _mg_v149 = _mg_v149 / 100.0
-                            if -10 < _mg_v149 <= 1:
-                                _custo_v149 = _pa_v149 * (1.0 - _mg_v149)
-                                if _custo_v149 >= 0:
-                                    out.at[_idx_v149, "Custo Unitário"] = _eirox_moeda_num(_custo_v149)
+
     except Exception:
         pass
 
@@ -19952,18 +19897,6 @@ def eirox_v63_tabela_subidas(base):
 
     out = eirox_fin_padronizar_ganho(out)
     out = eirox_fin_padronizar_ganho(out)
-
-    # V1.4.49 — preserva o custo unitário real calculado pelo motor.
-    # As rotinas acima normalizam campos financeiros e, quando o valor já
-    # estava formatado em BRL, podiam transformá-lo em NaN/None.
-    if "Custo_Unitario_Eirox" in motor.columns:
-        _custo_motor_v149 = pd.to_numeric(
-            motor["Custo_Unitario_Eirox"], errors="coerce"
-        )
-        out["Custo Unitário"] = [
-            _eirox_moeda_num(v) if pd.notna(v) and float(v) >= 0 else ""
-            for v in _custo_motor_v149.to_numpy()
-        ]
 
     out = eirox_v142_data_final_unica(
         out,
@@ -28454,6 +28387,28 @@ if "Ganho_Potencial" in df_filtrado.columns:
     ).fillna(0).sum()
 else:
     ganho_total_atualizado = 0
+
+# V1.4.52 — auditoria financeira, sem alterar os filtros ou o motor.
+with st.expander("🔎 Auditoria financeira — conferir ganhos", expanded=False):
+    st.caption("Compara os ganhos registrados com o preço atual exibido. "
+               "Não soma ações diferentes nem substitui dados ausentes por estimativas.")
+    try:
+        _aud_v152, _res_v152 = eirox_v152_auditoria_financeira(df_filtrado)
+        if not _res_v152.empty:
+            eirox_dataframe_brl(_res_v152, use_container_width=True, hide_index=True)
+            _div_v152 = _aud_v152[
+                _aud_v152["Situação"].ne("OK") | _aud_v152["Duplicidade EAN"]
+            ]
+            st.caption(f"Registros para conferência: {len(_div_v152):,}".replace(",", "."))
+            if not _div_v152.empty:
+                eirox_dataframe_brl(_div_v152, use_container_width=True, hide_index=True)
+            st.download_button(
+                "📥 Baixar auditoria CSV",
+                _aud_v152.to_csv(index=False,sep=";",decimal=",").encode("utf-8-sig"),
+                "auditoria_financeira.csv","text/csv",key="auditoria_v152_csv"
+            )
+    except Exception as _erro_aud_v152:
+        st.warning("A auditoria não pôde ser concluída. Consulte os logs para conferir a origem dos dados.")
 
 # --------------------------------------------------
 # KPIS
