@@ -19814,7 +19814,7 @@ def eirox_v147_corrigir_lista_subir_final(tab):
                         out.at[idx, "Custo Unitário"] = _eirox_moeda_num(cu_calc)
 
 
-    # V1.4.47 — barreira visual final com prioridade VENDA_TESTE e
+    # V1.4.49 — barreira visual final com prioridade VENDA_TESTE e
     # fallback VENDA_FINAL_TESTE do último mês fechado (Venda / Itens).
     try:
         _mapa = eirox_v146_preco_principal()
@@ -19839,10 +19839,37 @@ def eirox_v147_corrigir_lista_subir_final(tab):
                 v.strftime("%d/%m/%Y %H:%M:%S") if pd.notna(v) else ""
                 for v in _data
             ]
+            # V1.4.49 — Mês Ref. Venda pertence exclusivamente ao
+            # fallback da VENDA_FINAL_TESTE. Quando a fonte é VENDA_TESTE,
+            # exibimos apenas Data Última Venda.
             out["Mês Ref. Venda"] = [
-                str(v) if pd.notna(v) and str(v).lower() not in ("nan","nat","none") else ""
-                for v in _mes
+                (
+                    str(mes)
+                    if str(fonte) == "ÚLTIMO MÊS FECHADO"
+                    and pd.notna(mes)
+                    and str(mes).lower() not in ("nan","nat","none","")
+                    else ""
+                )
+                for fonte, mes in zip(_fonte, _mes)
             ]
+
+            # Recuperação final do custo somente se ainda estiver ausente.
+            # A margem foi calculada pelo próprio motor com o mesmo Preço Atual,
+            # portanto custo = preço * (1 - margem) recompõe o custo usado
+            # naquela classificação, sem alterar recomendação ou ganho.
+            if "Custo Unitário" in out.columns and "Margem Atual" in out.columns:
+                for _idx_v149 in out.index:
+                    _cu_v149 = _num(out.at[_idx_v149, "Custo Unitário"])
+                    if pd.isna(_cu_v149) or _cu_v149 < 0:
+                        _pa_v149 = _num(out.at[_idx_v149, "Preço Atual"])
+                        _mg_v149 = _num(out.at[_idx_v149, "Margem Atual"])
+                        if pd.notna(_pa_v149) and _pa_v149 > 0 and pd.notna(_mg_v149):
+                            if abs(_mg_v149) > 1:
+                                _mg_v149 = _mg_v149 / 100.0
+                            if -10 < _mg_v149 <= 1:
+                                _custo_v149 = _pa_v149 * (1.0 - _mg_v149)
+                                if _custo_v149 >= 0:
+                                    out.at[_idx_v149, "Custo Unitário"] = _eirox_moeda_num(_custo_v149)
     except Exception:
         pass
 
@@ -19930,6 +19957,19 @@ def eirox_v63_tabela_subidas(base):
 
     out = eirox_fin_padronizar_ganho(out)
     out = eirox_fin_padronizar_ganho(out)
+
+    # V1.4.49 — preserva o custo unitário real calculado pelo motor.
+    # As rotinas acima normalizam campos financeiros e, quando o valor já
+    # estava formatado em BRL, podiam transformá-lo em NaN/None.
+    if "Custo_Unitario_Eirox" in motor.columns:
+        _custo_motor_v149 = pd.to_numeric(
+            motor["Custo_Unitario_Eirox"], errors="coerce"
+        )
+        out["Custo Unitário"] = [
+            _eirox_moeda_num(v) if pd.notna(v) and float(v) >= 0 else ""
+            for v in _custo_motor_v149.to_numpy()
+        ]
+
     out = eirox_v142_data_final_unica(
         out,
         historico if "historico" in globals() else None
