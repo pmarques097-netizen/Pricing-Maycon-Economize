@@ -28847,106 +28847,9 @@ try:
         _eirox_flag_indice_v162 = "🔴 ÍNDICE BAIXO"
         _eirox_flag_classe_v162 = "baixo"
 
-    st.markdown(
-        f"""
-        <style>
-        .eirox-index-card-v161 {{
-            border:1px solid rgba(117,73,191,.72);
-            border-radius:18px;
-            padding:15px 18px 14px;
-            margin:0 0 12px 0;
-            background:
-                radial-gradient(circle at 92% 18%, rgba(174,88,255,.16), transparent 32%),
-                linear-gradient(135deg,#151b3f 0%,#0c1f39 100%);
-            box-shadow:0 8px 22px rgba(0,0,0,.16);
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:18px;
-        }}
-        .eirox-index-label-v161 {{
-            color:#bda8ff;
-            font-size:12px;
-            font-weight:800;
-            letter-spacing:.12em;
-            text-transform:uppercase;
-        }}
-        .eirox-index-title-v161 {{
-            color:#f4f7ff;
-            font-size:20px;
-            font-weight:850;
-            margin-top:4px;
-        }}
-        .eirox-index-meta-v161 {{
-            color:#91a8c2;
-            font-size:12px;
-            margin-top:5px;
-        }}
-        .eirox-index-value-v161 {{
-            color:#ffffff;
-            font-size:34px;
-            font-weight:900;
-            line-height:1;
-            text-align:right;
-        }}
-        .eirox-index-band-v161 {{
-            color:#c7d5e8;
-            font-size:12px;
-            text-align:right;
-            margin-top:7px;
-        }}
-        .eirox-index-flag-v162 {{
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            margin-top:9px;
-            padding:6px 11px;
-            border-radius:999px;
-            font-size:11px;
-            font-weight:850;
-            letter-spacing:.05em;
-            border:1px solid rgba(255,255,255,.12);
-            background:rgba(255,255,255,.06);
-            color:#f6f9ff;
-            white-space:nowrap;
-        }}
-        </style>
-        <div class="eirox-index-card-v161">
-            <div>
-                <div class="eirox-index-label-v161">Índice de Oportunidade</div>
-                <div class="eirox-index-title-v161">🤖 Índice Eirox</div>
-                <div class="eirox-index-meta-v161">
-                    60% Rentabilidade Atual + 40% Potencial de Captura
-                </div>
-            </div>
-            <div>
-                <div class="eirox-index-value-v161">{_eirox_indice_v161}</div>
-                <div class="eirox-index-band-v161">{_eirox_faixa_indice_v161}</div>
-                <div class="eirox-index-flag-v162">{_eirox_flag_indice_v162}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    # V1.4.63 — cálculo preservado; exibição passa a ser integrada
+    # aos cards do Dashboard Geral, evitando um bloco isolado acima do cabeçalho.
 
-    with st.expander("🎯 Entenda o Índice Eirox", expanded=False):
-        st.markdown(
-            f"""
-**Fórmula original preservada**
-
-**Índice Eirox = (Rentabilidade Atual × 60%) + ((Potencial de Captura ÷ 1.000) × 40%)**
-
-- Rentabilidade média usada: **{_eirox_margem_indice_v161:.2f}**
-- Potencial de Captura atual: **{moeda_br(_eirox_potencial_indice_v161)}**
-- Índice calculado: **{_eirox_indice_v161}**
-- Flag calculada: **{_eirox_flag_indice_v162}**
-
-Faixas:
-- 🟢 Acima de 70 pontos: alta oportunidade.
-- 🟡 Entre 40 e 70 pontos: oportunidade relevante.
-- 🔴 Abaixo de 40 pontos: baixo impacto financeiro.
-            """
-        )
 except Exception:
     pass
 
@@ -29245,7 +29148,7 @@ st.markdown(
     f"""
     <style>
     .eirox-kpi-grid-v1434 {{
-        display:grid; grid-template-columns:1fr 1fr 1fr 1.65fr 1fr 1fr;
+        display:grid; grid-template-columns:repeat(8,minmax(0,1fr));
         gap:14px; margin:4px 0 14px 0; align-items:stretch;
     }}
     .eirox-kpi-v1434 {{
@@ -29258,7 +29161,7 @@ st.markdown(
         content:''; position:absolute; left:0; top:0; right:0; height:3px;
         background:linear-gradient(90deg,#20b8ff,#2ed6bd); opacity:.95;
     }}
-    .eirox-kpi-v1434.main {{border-color:#7440bc; background:linear-gradient(145deg,#171c43,#151735);}}
+    .eirox-kpi-v1434.main {{border-color:#7440bc; grid-column:span 2; background:linear-gradient(145deg,#171c43,#151735);}}
     .eirox-kpi-v1434.main:before {{background:linear-gradient(90deg,#7b3cff,#b75cff);}}
     .eirox-kpi-head-v1434 {{display:flex;align-items:center;gap:10px;color:#c7daf0;font-size:13px;font-weight:650;white-space:nowrap;}}
     .eirox-kpi-icon-v1434 {{width:35px;height:35px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#123c67;font-size:18px;box-shadow:0 0 18px rgba(32,184,255,.18);flex:0 0 35px;}}
@@ -29269,6 +29172,17 @@ st.markdown(
     .eirox-kpi-v1434.warn .eirox-kpi-value-v1434 {{color:#ffc247;}}
     .eirox-kpi-v1434.blue .eirox-kpi-value-v1434 {{color:#55a8ff;}}
     .eirox-kpi-v1434.main .eirox-kpi-value-v1434 {{font-size:30px;}}
+    .eirox-kpi-v1434.index-eirox {{border-color:#7440bc;background:linear-gradient(145deg,#171c43,#151735);}}
+    .eirox-kpi-v1434.index-eirox:before {{background:linear-gradient(90deg,#7b3cff,#b75cff);}}
+    .eirox-kpi-v1434.index-eirox .eirox-kpi-icon-v1434 {{background:#5430a2;box-shadow:0 0 22px rgba(157,78,255,.28);}}
+    .eirox-kpi-v1434.index-eirox .eirox-kpi-value-v1434 {{color:#d8c2ff;font-size:30px;}}
+    .eirox-kpi-flag-v163 {{
+        display:inline-flex;align-items:center;justify-content:center;
+        margin-top:8px;padding:4px 8px;border-radius:999px;
+        font-size:10.5px;font-weight:850;letter-spacing:.03em;
+        background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.10);
+        color:#f5f8ff;white-space:nowrap;
+    }}
     .eirox-kpi-sub-v1434 {{font-size:11.5px;color:#8fa8c2;margin-top:9px;white-space:nowrap;}}
     @media(max-width:1200px) {{.eirox-kpi-grid-v1434{{grid-template-columns:repeat(3,1fr)}}}}
     </style>
@@ -29279,10 +29193,30 @@ st.markdown(
       <div class="eirox-kpi-v1434 main"><div class="eirox-kpi-head-v1434"><span class="eirox-kpi-icon-v1434">◎</span>POTENCIAL DE CAPTURA</div><div class="eirox-kpi-value-v1434">{_eirox_kpi_potencial}</div><div class="eirox-kpi-sub-v1434">oportunidade financeira identificada</div></div>
       <div class="eirox-kpi-v1434 warn"><div class="eirox-kpi-head-v1434"><span class="eirox-kpi-icon-v1434">♙</span>Laboratórios</div><div class="eirox-kpi-value-v1434">{_eirox_kpi_labs}</div><div class="eirox-kpi-sub-v1434">monitorados</div></div>
       <div class="eirox-kpi-v1434 blue"><div class="eirox-kpi-head-v1434"><span class="eirox-kpi-icon-v1434">◆</span>Preço Médio</div><div class="eirox-kpi-value-v1434">{_eirox_kpi_preco}</div><div class="eirox-kpi-sub-v1434">mercado analisado</div></div>
+      <div class="eirox-kpi-v1434 index-eirox"><div class="eirox-kpi-head-v1434"><span class="eirox-kpi-icon-v1434">🤖</span>Índice Eirox</div><div class="eirox-kpi-value-v1434">{_eirox_indice_v161}</div><div class="eirox-kpi-flag-v163">{_eirox_flag_indice_v162}</div></div>
     </div>
     """,
     unsafe_allow_html=True,
 )
+
+with st.expander("🎯 Entenda o Índice Eirox", expanded=False):
+    st.markdown(
+        f"""
+**Fórmula original preservada**
+
+**Índice Eirox = (Rentabilidade Atual × 60%) + ((Potencial de Captura ÷ 1.000) × 40%)**
+
+- Rentabilidade média usada: **{_eirox_margem_indice_v161:.2f}**
+- Potencial de Captura atual: **{moeda_br(_eirox_potencial_indice_v161)}**
+- Índice calculado: **{_eirox_indice_v161}**
+- Flag calculada: **{_eirox_flag_indice_v162}**
+
+Faixas:
+- 🟢 **70 pontos ou mais:** alta oportunidade.
+- 🟡 **De 40 a 69 pontos:** oportunidade relevante.
+- 🔴 **Abaixo de 40 pontos:** baixo impacto financeiro.
+        """
+    )
 
 explicacao_calculo(
     "Indicadores principais do Painel Geral",
@@ -29292,7 +29226,8 @@ explicacao_calculo(
         "Lucro Médio = média da coluna Lucro_Unitario dos produtos filtrados.",
         "Potencial de Captura = soma do Ganho de Lucro Potencial das ações válidas de SUBIR PREÇO, usando o mesmo Preço Atual e a mesma quantidade da tela detalhada.",
         "Laboratórios = quantidade de laboratórios únicos após os filtros.",
-        "Preço Médio = média da coluna Preco_Medio dos produtos filtrados."
+        "Preço Médio = média da coluna Preco_Medio dos produtos filtrados.",
+        "Índice Eirox = 60% da Rentabilidade Atual + 40% do Potencial de Captura dividido por 1.000. Flag: verde para índice >= 70, amarela de 40 a 69 e vermelha abaixo de 40."
     ]
 )
 
