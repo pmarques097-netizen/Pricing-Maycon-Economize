@@ -19747,15 +19747,13 @@ def eirox_v61_render_subir_preco(base):
 
 def eirox_v63_subidas_validas(base):
     """
-    V1.4.50 — ganho auditável pela mesma origem exibida em Preço Atual.
+    V1.4.59 — fonte única de ganho para Subir Preço, Dashboard, Executivo e Simulador.
 
     Regra:
-      Ganho Unitário = Preço Sugerido - Preço Atual
-      Ganho Potencial = Ganho Unitário x Qtd Vendida
-
-    Preço Atual já respeita a prioridade:
-      1) VENDA_TESTE;
-      2) fallback VENDA_FINAL_TESTE do último mês fechado com venda do EAN.
+      Preço Atual = regra oficial do Principal;
+      Preço Sugerido = motor central;
+      Volume = Itens do último mês fechado com venda do EAN;
+      Ganho = (Preço Sugerido - Preço Atual) x Volume.
     """
     if not isinstance(base, pd.DataFrame) or base.empty:
         return pd.DataFrame()
@@ -19764,38 +19762,63 @@ def eirox_v63_subidas_validas(base):
     if not isinstance(motor, pd.DataFrame) or motor.empty:
         return pd.DataFrame()
 
-    # Fonte única da conta: exatamente o campo que será mostrado como Preço Atual.
+    c_ean = _eirox_first_col(motor, ["EAN","EAN (GTIN)","GTIN"])
+    if not c_ean:
+        return pd.DataFrame()
+
+    motor = motor.copy()
+    motor["__EAN_V159"] = _ean(motor[c_ean])
+
     p = pd.to_numeric(motor["Preço_Atual_Eirox"], errors="coerce")
     mercado = pd.to_numeric(motor["Preço_Mercado_Eirox"], errors="coerce")
     sugerido = pd.to_numeric(motor["Preço_Sugerido_Eirox"], errors="coerce")
-    sugerido = sugerido.where(sugerido.notna() & (sugerido > 0), mercado)
+    sugerido = sugerido.where(sugerido.notna() & sugerido.gt(0), mercado)
 
     mask_subir = (
-        p.notna() & (p > 0)
-        & sugerido.notna() & (sugerido > p)
+        p.notna() & p.gt(0)
+        & sugerido.notna() & sugerido.gt(p)
         & motor["Recomendacao_Central"].astype(str).eq("SUBIR PREÇO")
     )
 
-    m = motor[mask_subir].copy()
+    m = motor.loc[mask_subir].copy()
     if m.empty:
         return m
+
+    # Último mês fechado COM venda por EAN, usando a VENDA_FINAL_TESTE carregada.
+    _vf = globals().get("venda_rede", pd.DataFrame())
+    fechado = eirox_v158_ultimo_mes_fechado_memoria(_vf)
+    if isinstance(fechado, pd.DataFrame) and not fechado.empty:
+        fechado = fechado.copy()
+        fechado["EAN"] = _ean(fechado["EAN"])
+        fechado = fechado.drop_duplicates("EAN", keep="last")
+        m = m.merge(
+            fechado[[
+                "EAN","Venda_Mes_Fechado","Itens_Mes_Fechado",
+                "Mes_Fechado_Referencia"
+            ]],
+            left_on="__EAN_V159",
+            right_on="EAN",
+            how="left",
+            suffixes=("","_MES")
+        )
+        if "EAN_MES" in m.columns:
+            m = m.drop(columns=["EAN_MES"])
+    else:
+        m["Venda_Mes_Fechado"] = np.nan
+        m["Itens_Mes_Fechado"] = np.nan
+        m["Mes_Fechado_Referencia"] = ""
 
     p = pd.to_numeric(m["Preço_Atual_Eirox"], errors="coerce")
     sugerido = pd.to_numeric(m["Preço_Sugerido_Eirox"], errors="coerce")
     sugerido = sugerido.where(
-        sugerido.notna() & (sugerido > 0),
+        sugerido.notna() & sugerido.gt(0),
         pd.to_numeric(m["Preço_Mercado_Eirox"], errors="coerce")
     )
 
-    # Fecha o ganho unitário em centavos antes de multiplicar,
-    # para a conferência manual bater com a tela/Excel.
     ganho_unit = (sugerido - p).clip(lower=0).round(2)
 
-    qtd = pd.to_numeric(
-        m.get("Qtd_Vendida_Eirox", pd.Series(0, index=m.index)),
-        errors="coerce"
-    ).fillna(0)
-
+    # Volume oficial: último mês fechado. Sem volume fechado, não projeta ganho.
+    qtd = pd.to_numeric(m["Itens_Mes_Fechado"], errors="coerce").fillna(0)
     ganho_pot = (ganho_unit * qtd).round(2)
 
     m["Ganho_Lucro_Unitario_Eirox"] = ganho_unit
@@ -19803,17 +19826,79 @@ def eirox_v63_subidas_validas(base):
     m["Impacto_Unitario_Eirox"] = ganho_unit
     m["Impacto_Financeiro_Eirox"] = ganho_pot
     m["Diferença_Subida_%_Eirox"] = np.where(
-        p > 0, (sugerido - p) / p, np.nan
+        p.gt(0), (sugerido - p) / p, np.nan
     )
     m["Qtd_Base_Ganho_Eirox"] = qtd
-
-    # Auditoria explícita: o preço usado na conta é o próprio Preço Atual.
+    m["Qtd_Vendida_Eirox"] = qtd
     m["Preço_Usado_no_Ganho_Eirox"] = p
-    m["Conferencia_Ganho_Eirox"] = (
-        m["Ganho_Lucro_Unitario_Eirox"] * m["Qtd_Base_Ganho_Eirox"]
-    ).round(2)
+    m["Conferencia_Ganho_Eirox"] = (ganho_unit * qtd).round(2)
+
+    # Só permanece como oportunidade financeira quando existe volume fechado.
+    m = m[qtd.gt(0) & ganho_pot.gt(0)].copy()
 
     return m
+
+
+def eirox_v159_simulacao_unificada(base):
+    """
+    Monta o Simulador a partir da MESMA lista financeira de SUBIR PREÇO.
+    Portanto, total e produtos são idênticos ao Potencial de Captura.
+    """
+    sub = eirox_v63_subidas_validas(base)
+    if not isinstance(sub, pd.DataFrame) or sub.empty:
+        return pd.DataFrame()
+
+    c_ean = _eirox_first_col(sub, ["EAN","EAN (GTIN)","GTIN"])
+    c_prod = _eirox_first_col(sub, ["Produto","Descrição","Descricao","Produto na Pesquisa"])
+
+    out = pd.DataFrame(index=sub.index)
+    out["EAN"] = _ean(sub[c_ean]) if c_ean else ""
+    if c_prod:
+        out["Produto_Simulador"] = sub[c_prod].astype(str)
+
+    out["Mes_Fechado_Referencia"] = sub.get(
+        "Mes_Fechado_Referencia", pd.Series("", index=sub.index)
+    )
+    out["Qtd_Vendida_Mes_Anterior"] = pd.to_numeric(
+        sub.get("Qtd_Base_Ganho_Eirox", 0), errors="coerce"
+    ).fillna(0)
+    out["Venda_Real_Mes_Fechado"] = pd.to_numeric(
+        sub.get("Venda_Mes_Fechado", np.nan), errors="coerce"
+    )
+    out["Preco_Atual"] = pd.to_numeric(sub["Preço_Atual_Eirox"], errors="coerce")
+    out["Preco_Sugerido_Mercado"] = pd.to_numeric(sub["Preço_Sugerido_Eirox"], errors="coerce")
+    out["Venda_Preco_Antigo"] = (
+        out["Preco_Atual"] * out["Qtd_Vendida_Mes_Anterior"]
+    ).round(2)
+    out["Venda_Projetada_Preco_Sugerido"] = (
+        out["Preco_Sugerido_Mercado"] * out["Qtd_Vendida_Mes_Anterior"]
+    ).round(2)
+    out["Ganho_Unitario"] = pd.to_numeric(
+        sub["Ganho_Lucro_Unitario_Eirox"], errors="coerce"
+    )
+    out["Ganho_Potencial_Simulador"] = pd.to_numeric(
+        sub["Ganho_Lucro_Potencial_Eirox"], errors="coerce"
+    )
+
+    if "Menor Preço Concorrente" in sub.columns:
+        out["Menor_Preco"] = pd.to_numeric(
+            sub["Menor Preço Concorrente"], errors="coerce"
+        )
+    else:
+        out["Menor_Preco"] = pd.to_numeric(
+            sub["Preço_Mercado_Eirox"], errors="coerce"
+        )
+
+    if "Loja do Menor Preço" in sub.columns:
+        out["Rede_Menor_Preco"] = sub["Loja do Menor Preço"].fillna("").astype(str)
+        out["Rede_Preco_Maximo_Competitivo"] = out["Rede_Menor_Preco"]
+    if "Data da Pesquisa" in sub.columns:
+        out["Data_Menor_Preco"] = sub["Data da Pesquisa"]
+        out["Data_Preco_Maximo_Competitivo"] = sub["Data da Pesquisa"]
+
+    return out.reset_index(drop=True)
+
+
 
 
 
@@ -25682,16 +25767,15 @@ if pagina == "🏢 Dashboard Executivo":
 
     total_produtos = len(base_exec)
 
-    # V1.4.55 — mesmo ganho de SUBIR PREÇO usado no Dashboard Geral.
+    # V1.4.59 — mesmo total do Dashboard Geral / Subir / Simulador.
     try:
-        _sub_exec_v155 = eirox_v63_subidas_validas(df_filtrado.copy())
+        _sim_exec_v159 = eirox_v159_simulacao_unificada(df_filtrado.copy())
         ganho_total = (
             pd.to_numeric(
-                _sub_exec_v155["Ganho_Lucro_Potencial_Eirox"],
-                errors="coerce"
+                _sim_exec_v159["Ganho_Potencial_Simulador"], errors="coerce"
             ).fillna(0).sum()
-            if isinstance(_sub_exec_v155, pd.DataFrame)
-            and not _sub_exec_v155.empty
+            if isinstance(_sim_exec_v159, pd.DataFrame)
+            and not _sim_exec_v159.empty
             else 0.0
         )
     except Exception:
@@ -28616,6 +28700,14 @@ if "Ganho_Potencial" in df_filtrado.columns:
 else:
     ganho_total_atualizado = 0
 
+# V1.4.59 — uma única população financeira para todas as visões.
+try:
+    simulacao_global = eirox_v159_simulacao_unificada(df_filtrado.copy())
+    origem_simulacao_global = "motor_subir_preco_unificado"
+except Exception:
+    simulacao_global = pd.DataFrame()
+    origem_simulacao_global = "erro_unificacao_v159"
+
 # V1.4.52 — auditoria financeira, sem alterar os filtros ou o motor.
 with st.expander("🔎 Auditoria financeira — conferir ganhos", expanded=False):
     st.caption("Compara os ganhos registrados com o preço atual exibido. "
@@ -28648,29 +28740,16 @@ _eirox_kpi_pesquisas = quantidade_pesquisas_card(historico, df_filtrado)
 _eirox_kpi_rentabilidade = percentual_br(df_filtrado["Margem_%"].mean())
 _eirox_kpi_lucro = moeda_br(df_filtrado["Lucro_Unitario"].mean())
 
-# V1.4.51 — Potencial de Captura usa exatamente o mesmo motor financeiro
-# da tela SUBIR PREÇO, em vez da coluna histórica Ganho_Potencial.
+# V1.4.59 — Potencial de Captura = soma exata do Simulador/Subir Preço.
 try:
-    _base_kpi_subir_v151 = df_filtrado.copy()
-    try:
-        _base_kpi_subir_v151 = eirox_enriquecer_menor_preco_concorrente(
-            _base_kpi_subir_v151,
-            historico if "historico" in globals() else None
-        )
-        _base_kpi_subir_v151 = eirox_padronizar_campos_pesquisa_global(
-            _base_kpi_subir_v151
-        )
-    except Exception:
-        pass
-
-    _subidas_kpi_v151 = eirox_v63_subidas_validas(_base_kpi_subir_v151)
-    if isinstance(_subidas_kpi_v151, pd.DataFrame) and not _subidas_kpi_v151.empty:
-        _potencial_kpi_v151 = pd.to_numeric(
-            _subidas_kpi_v151["Ganho_Lucro_Potencial_Eirox"],
-            errors="coerce"
+    _potencial_kpi_v151 = (
+        pd.to_numeric(
+            simulacao_global["Ganho_Potencial_Simulador"], errors="coerce"
         ).fillna(0).sum()
-    else:
-        _potencial_kpi_v151 = 0.0
+        if isinstance(simulacao_global, pd.DataFrame)
+        and not simulacao_global.empty
+        else 0.0
+    )
 except Exception:
     _potencial_kpi_v151 = 0.0
 
@@ -31482,7 +31561,7 @@ if (
 # --------------------------------------------------
 
 st.subheader(
-    "💵 Simulador de Ganho — Último Mês Fechado por EAN"
+    "💵 Simulador de Ganho — Mesma Base do Subir Preço"
 )
 
 if not simulacao_global.empty:
@@ -31536,7 +31615,7 @@ if not simulacao_global.empty:
         )
         if _meses_sim_v153:
             st.caption(
-                "Volume do simulador: último mês fechado com venda de cada EAN. "
+                "Mesma população do Subir Preço. Volume: último mês fechado com venda de cada EAN. "
                 "Competências utilizadas: " + ", ".join(_meses_sim_v153)
             )
 
