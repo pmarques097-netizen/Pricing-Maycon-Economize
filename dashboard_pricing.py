@@ -28754,370 +28754,157 @@ if "EAN" in produtos_recomendacao.columns:
         .str.strip()
     )
 
+
 # --------------------------------------------------
-# CRUZAR COM SIMULADOR PELO EAN
+# V1.4.56 — DETALHE DA RECOMENDAÇÃO PELA MESMA BASE DO RESUMO
 # --------------------------------------------------
+# O simulador passa a ser apenas uma fonte opcional de enriquecimento.
+# Nenhum produto contado no quadro de recomendações pode desaparecer por
+# ausência no simulador.
 
-if (
-    "simulacao_global" in globals()
-    and not simulacao_global.empty
-    and "EAN" in produtos_recomendacao.columns
-):
+produtos_detalhe = produtos_recomendacao.drop_duplicates(subset=["EAN"], keep="first").copy()
 
-    simulador_base = simulacao_global.copy()
+try:
+    if not produtos_detalhe.empty and "EAN" in produtos_detalhe.columns:
+        produtos_detalhe["EAN"] = _ean(produtos_detalhe["EAN"])
 
-    simulador_base["EAN"] = (
-        simulador_base["EAN"]
-        .astype(str)
-        .str.replace(".0", "", regex=False)
-        .str.strip()
-    )
+        # Motor central na MESMA população selecionada.
+        _motor_det_v156 = eirox_motor_oportunidades(produtos_recomendacao.copy())
+        if isinstance(_motor_det_v156, pd.DataFrame) and not _motor_det_v156.empty:
+            _ce_det_v156 = _eirox_first_col(_motor_det_v156, ["EAN","EAN (GTIN)","GTIN"])
+            if _ce_det_v156:
+                _motor_det_v156 = _motor_det_v156.copy()
+                _motor_det_v156["EAN"] = _ean(_motor_det_v156[_ce_det_v156])
+                _motor_det_v156 = _motor_det_v156.drop_duplicates("EAN", keep="first")
 
-    cadastro_produtos = (
-        produtos_recomendacao
-        .drop_duplicates(
-            subset=[
-                "EAN"
-            ]
-        )
-        .copy()
-    )
+                _fin_det_v156 = pd.DataFrame({
+                    "EAN": _motor_det_v156["EAN"],
+                    "Preco_Atual": pd.to_numeric(_motor_det_v156["Preço_Atual_Eirox"], errors="coerce"),
+                    "Preco_Sugerido_Mercado": pd.to_numeric(_motor_det_v156["Preço_Sugerido_Eirox"], errors="coerce"),
+                    "Custo": pd.to_numeric(_motor_det_v156["Custo_Unitario_Eirox"], errors="coerce"),
+                    "Qtd_Vendida_Motor": pd.to_numeric(_motor_det_v156["Qtd_Vendida_Eirox"], errors="coerce"),
+                    "Margem_Motor": pd.to_numeric(_motor_det_v156["Margem_Atual_Eirox"], errors="coerce"),
+                    "Ganho_Unitario": pd.to_numeric(_motor_det_v156["Ganho_Lucro_Unitario_Eirox"], errors="coerce"),
+                    "Ganho_Potencial_Simulador": pd.to_numeric(_motor_det_v156["Ganho_Lucro_Potencial_Eirox"], errors="coerce"),
+                })
 
-    colunas_cadastro = []
-
-    for coluna in [
-        "EAN",
-        "Descricao_Unica",
-        "Produto",
-                "Menor Preço Concorrente",
-                "Loja do Menor Preço",
-                "Data da Pesquisa",
-        "Laboratório",
-        "Família",
-        "CURVA",
-        "Recomendacao",
-        "Margem_%",
-        "Lucro_Unitario",
-        "Preco_Medio"
-    ]:
-
-        if coluna in cadastro_produtos.columns:
-            colunas_cadastro.append(coluna)
-
-    # V1.4.19 — detalhe deve preservar exatamente os produtos contados no resumo.
-    # A versão anterior usava o simulador como lado esquerdo + INNER JOIN,
-    # fazendo itens desaparecerem quando o EAN não existia no simulador.
-    # Agora a recomendação selecionada é a fonte principal e o simulador apenas
-    # enriquece os campos disponíveis, sem filtrar/reclassificar produto algum.
-    simulador_unico = simulador_base.drop_duplicates(subset=["EAN"], keep="first").copy()
-    _cols_sim_v1419 = [
-        c for c in simulador_unico.columns
-        if c == "EAN" or c not in cadastro_produtos.columns
-    ]
-    produtos_detalhe = cadastro_produtos[colunas_cadastro].merge(
-        simulador_unico[_cols_sim_v1419],
-        on="EAN",
-        how="left"
-    )
-
-    # --------------------------------------------------
-    # CUSTO UNITÁRIO PELA VENDA_FINAL_TESTE
-    # --------------------------------------------------
-    # Regra solicitada:
-    # Custo unitário = soma da coluna "Custo" / soma da coluna "Itens"
-    # A origem é a base venda_rede, carregada da pasta VENDA_FINAL_TESTE.
-
-    try:
-
-        if "Custo" not in produtos_detalhe.columns and isinstance(venda_rede, pd.DataFrame) and not venda_rede.empty:
-
-            base_custo_venda = venda_rede.copy()
-            base_custo_venda.columns = base_custo_venda.columns.astype(str).str.strip()
-
-            col_ean_custo = achar_coluna(
-                base_custo_venda,
-                [
-                    "EAN",
-                    "EAN (GTIN)",
-                    "GTIN",
-                    "Código de Barras",
-                    "Codigo de Barras",
-                    "Cód. Barras/Etiq.",
-                    "Cod. Barras/Etiq."
-                ],
-                [
-                    "ean",
-                    "gtin",
-                    "barras"
-                ]
-            )
-
-            col_custo_venda = achar_coluna(
-                base_custo_venda,
-                [
-                    "Custo",
-                    "CUSTO",
-                    "Valor Custo",
-                    "Custo Total",
-                    "CMV"
-                ],
-                [
-                    "custo",
-                    "cmv"
-                ]
-            )
-
-            col_itens_venda = achar_coluna(
-                base_custo_venda,
-                [
-                    "Itens",
-                    "Item",
-                    "Quantidade",
-                    "Qtd",
-                    "QTD",
-                    "Qtde",
-                    "Unidades"
-                ],
-                [
-                    "itens",
-                    "item",
-                    "qtd",
-                    "quant",
-                    "qtde",
-                    "unid"
-                ]
-            )
-
-            if col_ean_custo and col_custo_venda and col_itens_venda:
-
-                base_custo_venda["EAN"] = (
-                    base_custo_venda[col_ean_custo]
-                    .astype(str)
-                    .str.replace(".0", "", regex=False)
-                    .str.strip()
-                )
-
-                base_custo_venda["Custo_Total_Venda_Final"] = converter_numero_brasil(
-                    base_custo_venda[col_custo_venda]
-                )
-
-                base_custo_venda["Itens_Venda_Final"] = converter_numero_brasil(
-                    base_custo_venda[col_itens_venda]
-                )
-
-                custo_por_ean = (
-                    base_custo_venda
-                    .dropna(subset=["EAN", "Custo_Total_Venda_Final", "Itens_Venda_Final"])
-                    .groupby("EAN", as_index=False)
-                    .agg(
-                        Custo_Total_Venda_Final=("Custo_Total_Venda_Final", "sum"),
-                        Itens_Venda_Final=("Itens_Venda_Final", "sum")
+                if "Preço_Mercado_Eirox" in _motor_det_v156.columns:
+                    _fin_det_v156["Menor_Preco"] = pd.to_numeric(
+                        _motor_det_v156["Preço_Mercado_Eirox"], errors="coerce"
                     )
-                )
+                if "Menor Preço Concorrente" in _motor_det_v156.columns:
+                    _fin_det_v156["Menor Preço Concorrente"] = _motor_det_v156["Menor Preço Concorrente"]
+                if "Loja do Menor Preço" in _motor_det_v156.columns:
+                    _fin_det_v156["Loja do Menor Preço"] = _motor_det_v156["Loja do Menor Preço"]
+                    _fin_det_v156["Loja_Menor_Preco_Concorrente"] = _motor_det_v156["Loja do Menor Preço"]
+                if "Data da Pesquisa" in _motor_det_v156.columns:
+                    _fin_det_v156["Data da Pesquisa"] = _motor_det_v156["Data da Pesquisa"]
 
-                custo_por_ean = custo_por_ean[
-                    custo_por_ean["Itens_Venda_Final"] > 0
-                ].copy()
-
-                custo_por_ean["Custo"] = (
-                    custo_por_ean["Custo_Total_Venda_Final"]
-                    / custo_por_ean["Itens_Venda_Final"]
-                )
+                # Evita colisão com colunas cadastrais antigas.
+                _drop_det_v156 = [
+                    c for c in _fin_det_v156.columns
+                    if c != "EAN" and c in produtos_detalhe.columns
+                ]
+                if _drop_det_v156:
+                    produtos_detalhe = produtos_detalhe.drop(columns=_drop_det_v156)
 
                 produtos_detalhe = produtos_detalhe.merge(
-                    custo_por_ean[["EAN", "Custo"]],
-                    on="EAN",
-                    how="left"
+                    _fin_det_v156, on="EAN", how="left"
                 )
 
-    except Exception:
-        pass
-
-    # --------------------------------------------------
-    # MENOR PREÇO E LOJA COM MENOR PREÇO
-    # --------------------------------------------------
-
-    if (
-        not historico.empty
-        and "Preço (R$)" in historico.columns
-        and "Farmácia" in historico.columns
-    ):
-
-        hist_menor = historico.copy()
-
-        if "EAN" not in hist_menor.columns and "EAN (GTIN)" in hist_menor.columns:
-            hist_menor["EAN"] = hist_menor["EAN (GTIN)"]
-
-        if "EAN" in hist_menor.columns:
-
-            hist_menor["EAN"] = (
-                hist_menor["EAN"]
-                .astype(str)
-                .str.replace(".0", "", regex=False)
-                .str.strip()
-            )
-
-            hist_menor["Preço (R$)"] = pd.to_numeric(
-                hist_menor["Preço (R$)"],
-                errors="coerce"
-            )
-
-            hist_menor = hist_menor.dropna(
-                subset=[
-                    "EAN",
-                    "Preço (R$)"
-                ]
-            )
-
-            idx_menor_preco = (
-                hist_menor
-                .groupby("EAN")
-                ["Preço (R$)"]
-                .idxmin()
-            )
-
-            menor_preco_loja = (
-                hist_menor
-                .loc[
-                    idx_menor_preco,
-                    [
-                        "EAN",
-                        "Preço (R$)",
-                        "Farmácia"
-                    ]
-                ]
-                .rename(
-                    columns={
-                        "Preço (R$)": "Menor_Preco",
-                        "Farmácia": "Loja_Menor_Preco_Concorrente"
-                    }
-                )
-            )
-
+        # Último mês fechado com venda do EAN: volume e faturamento de referência.
+        _fechado_det_v156 = eirox_v146_ultimo_mes_fechado()
+        if isinstance(_fechado_det_v156, pd.DataFrame) and not _fechado_det_v156.empty:
+            _mes_det_v156 = _fechado_det_v156[[
+                "EAN","Venda_Mes_Fechado","Itens_Mes_Fechado","Mes_Fechado_Referencia"
+            ]].drop_duplicates("EAN", keep="last").copy()
+            _mes_det_v156["EAN"] = _ean(_mes_det_v156["EAN"])
             produtos_detalhe = produtos_detalhe.merge(
-                menor_preco_loja,
-                on="EAN",
-                how="left"
+                _mes_det_v156, on="EAN", how="left"
             )
 
-    # V1.3.1 - garante que preço/loja/data venham da mesma ocorrência vencedora
-    # do histórico antes de renderizar a tabela de Produtos da recomendação.
-    try:
-        produtos_detalhe = eirox_enriquecer_menor_preco_concorrente(
-            produtos_detalhe, historico
+            produtos_detalhe["Qtd_Vendida_Mes_Anterior"] = pd.to_numeric(
+                produtos_detalhe["Itens_Mes_Fechado"], errors="coerce"
+            )
+            produtos_detalhe["Venda_Preco_Antigo"] = pd.to_numeric(
+                produtos_detalhe["Venda_Mes_Fechado"], errors="coerce"
+            )
+
+        # Se não houver mês fechado para um EAN, mantém o volume do motor,
+        # mas não elimina o produto da recomendação.
+        if "Qtd_Vendida_Mes_Anterior" not in produtos_detalhe.columns:
+            produtos_detalhe["Qtd_Vendida_Mes_Anterior"] = np.nan
+        if "Qtd_Vendida_Motor" in produtos_detalhe.columns:
+            _qdet = pd.to_numeric(produtos_detalhe["Qtd_Vendida_Mes_Anterior"], errors="coerce")
+            _qmot = pd.to_numeric(produtos_detalhe["Qtd_Vendida_Motor"], errors="coerce")
+            produtos_detalhe["Qtd_Vendida_Mes_Anterior"] = _qdet.where(
+                _qdet.notna() & _qdet.gt(0), _qmot
+            )
+
+        # Projeção somente quando preço e volume forem válidos.
+        _pa_det = pd.to_numeric(produtos_detalhe.get("Preco_Atual"), errors="coerce")
+        _ps_det = pd.to_numeric(produtos_detalhe.get("Preco_Sugerido_Mercado"), errors="coerce")
+        _q_det = pd.to_numeric(produtos_detalhe.get("Qtd_Vendida_Mes_Anterior"), errors="coerce")
+
+        produtos_detalhe["Venda_Projetada_Preco_Sugerido"] = np.where(
+            _ps_det.gt(0) & _q_det.gt(0),
+            (_ps_det * _q_det).round(2),
+            np.nan
         )
-    except Exception:
-        pass
 
-    produtos_detalhe = eirox_qd_corrigir_data_exibicao(produtos_detalhe)
+        # Ganho de lucro só existe para aumento de preço.
+        _rec_det = produtos_detalhe["Recomendacao"].fillna("").astype(str).str.upper()
+        _gu_det = (_ps_det - _pa_det).round(2)
+        _gp_det = (_gu_det.clip(lower=0) * _q_det).round(2)
 
-    # V1.4.28 — ENRIQUECIMENTO LOCAL DO DETALHE DE RECOMENDAÇÃO
-    # Corrige somente campos financeiros ausentes/zerados na tabela de detalhe,
-    # sem alterar Recomendacao, filtros, contagens ou classificação do motor.
-    # A fonte prioritária é a própria base já classificada (df_filtrado /
-    # produtos_recomendacao), vinculada por EAN.
-    try:
-        if isinstance(produtos_detalhe, pd.DataFrame) and not produtos_detalhe.empty and "EAN" in produtos_detalhe.columns:
-            _fontes_v1428 = []
-            for _f in [produtos_recomendacao, df_filtrado if "df_filtrado" in globals() else None]:
-                if isinstance(_f, pd.DataFrame) and not _f.empty:
-                    _fontes_v1428.append(_f.copy())
+        produtos_detalhe["Ganho_Unitario"] = np.where(
+            _rec_det.str.contains("SUBIR", na=False) & _gu_det.gt(0),
+            _gu_det,
+            0.0
+        )
+        produtos_detalhe["Ganho_Potencial_Simulador"] = np.where(
+            _rec_det.str.contains("SUBIR", na=False) & _gp_det.gt(0),
+            _gp_det,
+            0.0
+        )
 
-            def _v1428_num_serie(_df, _nomes):
-                _res = pd.Series(np.nan, index=_df.index, dtype="float64")
-                for _n in _nomes:
-                    if _n not in _df.columns:
-                        continue
-                    _s = _eirox_num(_df[_n])
-                    _m = (_res.isna() | (_res <= 0)) & _s.notna() & (_s > 0)
-                    _res.loc[_m] = _s.loc[_m]
-                return _res
+        # Margem e lucro unitário derivados somente de preço/custo reais.
+        if "Margem_%" not in produtos_detalhe.columns:
+            produtos_detalhe["Margem_%"] = np.nan
+        _cu_det = pd.to_numeric(produtos_detalhe.get("Custo"), errors="coerce")
+        _marg_det = np.where(
+            _pa_det.gt(0) & _cu_det.notna(),
+            ((_pa_det - _cu_det) / _pa_det) * 100,
+            np.nan
+        )
+        produtos_detalhe["Margem_%"] = _marg_det
 
-            def _v1428_primeiro_positivo(_s):
-                _x = pd.to_numeric(_s, errors="coerce")
-                _x = _x[_x.notna() & (_x > 0)]
-                return float(_x.iloc[0]) if not _x.empty else np.nan
+        if "Lucro_Unitario" not in produtos_detalhe.columns:
+            produtos_detalhe["Lucro_Unitario"] = np.nan
+        produtos_detalhe["Lucro_Unitario"] = np.where(
+            _pa_det.gt(0) & _cu_det.notna(),
+            _pa_det - _cu_det,
+            np.nan
+        )
 
-            _maps_v1428 = {
-                "Preco_Atual": {},
-                "Qtd_Vendida_Mes_Anterior": {},
-                "Venda_Preco_Antigo": {},
-                "Custo": {},
-            }
+        # Preço médio exibido passa a ser a referência competitiva do motor.
+        if "Preco_Medio" not in produtos_detalhe.columns:
+            produtos_detalhe["Preco_Medio"] = _ps_det
 
-            for _src in _fontes_v1428:
-                _ce = _eirox_first_col(_src, ["EAN", "EAN (GTIN)", "GTIN"])
-                if not _ce:
-                    continue
-                _src["__ean_v1428"] = _src[_ce].apply(_normalizar_ean_eirox)
-                _src["__pa_v1428"] = _v1428_num_serie(_src, [
-                    "Preco_Atual_Venda", "Preço_Atual_Venda", "Preço Atual Venda",
-                    "Preco_Atual", "Preço_Atual", "Preço Atual", "Preco Atual",
-                    "Preço Principal", "Preco Principal", "Preco_Venda", "Preço Venda"
-                ])
-                _src["__qtd_v1428"] = _v1428_num_serie(_src, [
-                    "Qtd_Vendida_Mes_Anterior", "Qtd Vendida Mês Anterior",
-                    "Qtd Vendida Mes Anterior", "Qtd_Vendida", "Qtd Vendida",
-                    "Quantidade Vendida", "Quantidade_Vendida"
-                ])
-                _src["__va_v1428"] = _v1428_num_serie(_src, [
-                    "Venda_Preco_Antigo", "Venda Preço Antigo", "Venda Preco Antigo",
-                    "Faturamento Atual", "Faturamento_Atual", "Venda Atual", "Venda_Atual"
-                ])
-                _src["__cu_v1428"] = _v1428_num_serie(_src, [
-                    "Custo", "Custo_Unitario", "Custo Unitário", "Custo Unitario",
-                    "Custo_Unitario_Eirox", "Custo Atual"
-                ])
+        # Ordenação: ações de subida por ganho; demais preservam produto/EAN.
+        if str(recomendacao_selecionada).upper().startswith("SUBIR"):
+            produtos_detalhe = produtos_detalhe.sort_values(
+                "Ganho_Potencial_Simulador", ascending=False, kind="stable"
+            )
+        elif "Produto" in produtos_detalhe.columns:
+            produtos_detalhe = produtos_detalhe.sort_values(
+                "Produto", ascending=True, kind="stable"
+            )
 
-                _lk = _src.groupby("__ean_v1428", as_index=True).agg(
-                    Preco_Atual=("__pa_v1428", _v1428_primeiro_positivo),
-                    Qtd_Vendida_Mes_Anterior=("__qtd_v1428", _v1428_primeiro_positivo),
-                    Venda_Preco_Antigo=("__va_v1428", _v1428_primeiro_positivo),
-                    Custo=("__cu_v1428", _v1428_primeiro_positivo),
-                )
-                for _campo in _maps_v1428:
-                    for _ean, _valor in _lk[_campo].dropna().items():
-                        if _valor > 0 and _ean not in _maps_v1428[_campo]:
-                            _maps_v1428[_campo][_ean] = float(_valor)
+except Exception:
+    # Mesmo se algum enriquecimento falhar, nunca apaga a população contada.
+    produtos_detalhe = produtos_recomendacao.drop_duplicates(subset=["EAN"], keep="first").copy()
 
-            _eans_det = produtos_detalhe["EAN"].apply(_normalizar_ean_eirox)
-            for _campo in ["Preco_Atual", "Qtd_Vendida_Mes_Anterior", "Venda_Preco_Antigo", "Custo"]:
-                if _campo not in produtos_detalhe.columns:
-                    produtos_detalhe[_campo] = np.nan
-                _atual = _eirox_num(produtos_detalhe[_campo])
-                _rec = _eans_det.map(_maps_v1428[_campo])
-                _mask = (_atual.isna() | (_atual <= 0)) & _rec.notna() & (_rec > 0)
-                produtos_detalhe.loc[_mask, _campo] = _rec.loc[_mask]
-
-            # Se a quantidade veio apenas da projeção, recupera sem inventar dado:
-            # quantidade = venda projetada / preço sugerido.
-            if "Qtd_Vendida_Mes_Anterior" in produtos_detalhe.columns:
-                _q = _eirox_num(produtos_detalhe["Qtd_Vendida_Mes_Anterior"])
-                _vp = _eirox_num(produtos_detalhe.get("Venda_Projetada_Preco_Sugerido", pd.Series(np.nan, index=produtos_detalhe.index)))
-                _ps = _eirox_num(produtos_detalhe.get("Preco_Sugerido_Mercado", pd.Series(np.nan, index=produtos_detalhe.index)))
-                _qcalc = _vp / _ps.replace(0, np.nan)
-                _maskq = (_q.isna() | (_q <= 0)) & _qcalc.notna() & (_qcalc > 0)
-                produtos_detalhe.loc[_maskq, "Qtd_Vendida_Mes_Anterior"] = _qcalc.loc[_maskq].round(0)
-
-            # Com preço atual + quantidade válidos, venda antiga passa a ser
-            # calculável; a função financeira abaixo recalculará ganhos.
-            _pa = _eirox_num(produtos_detalhe["Preco_Atual"])
-            _q = _eirox_num(produtos_detalhe["Qtd_Vendida_Mes_Anterior"])
-            _va = _eirox_num(produtos_detalhe["Venda_Preco_Antigo"])
-            _vacalc = _pa * _q
-            _maskva = (_va.isna() | (_va <= 0)) & _vacalc.notna() & (_vacalc > 0)
-            produtos_detalhe.loc[_maskva, "Venda_Preco_Antigo"] = _vacalc.loc[_maskva]
-    except Exception:
-        pass
-
-    produtos_detalhe = produtos_detalhe.sort_values(
-        "Ganho_Potencial_Simulador",
-        ascending=False
-    )
-
-else:
-
-    produtos_detalhe = pd.DataFrame()
 
 if not produtos_detalhe.empty:
 
@@ -29584,8 +29371,7 @@ if not produtos_detalhe.empty:
 else:
 
     st.warning(
-        "Não há produtos dessa recomendação com dados completos no Simulador. "
-        "Isso ocorre quando o EAN não existe na venda da rede ou não teve venda no período."
+        "Não há produtos na recomendação selecionada para os filtros atuais."
     )
 
 
