@@ -28474,11 +28474,343 @@ if pagina == "🚨 Central de Alertas":
 
 
 
+def eirox_v160_motor_rentabilidade(base, margem_alvo_pct=20.0):
+    """
+    Motor de Rentabilidade do Dashboard Geral.
+
+    Usa a mesma fonte financeira central do Pricing:
+    - preço atual oficial;
+    - custo unitário;
+    - referência competitiva de mercado;
+    - volume do último mês fechado com venda por EAN.
+
+    Não altera a recomendação oficial do Pricing. É uma visão analítica
+    específica para rentabilidade.
+    """
+    if not isinstance(base, pd.DataFrame) or base.empty:
+        return pd.DataFrame()
+
+    alvo = float(margem_alvo_pct) / 100.0
+    alvo = min(max(alvo, 0.01), 0.95)
+
+    motor = eirox_motor_oportunidades(base.copy())
+    if not isinstance(motor, pd.DataFrame) or motor.empty:
+        return pd.DataFrame()
+
+    c_ean = _eirox_first_col(motor, ["EAN","EAN (GTIN)","GTIN"])
+    c_prod = _eirox_first_col(motor, ["Produto","Descrição","Descricao","Produto na Pesquisa"])
+    c_lab = _eirox_first_col(motor, ["Laboratório","Laboratorio","Fabricante","Fornecedor"])
+    if not c_ean:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(index=motor.index)
+    out["EAN"] = _ean(motor[c_ean])
+    out["Produto"] = motor[c_prod].astype(str) if c_prod else ""
+    out["Laboratório"] = motor[c_lab].astype(str) if c_lab else ""
+
+    out["Preço Atual"] = pd.to_numeric(motor["Preço_Atual_Eirox"], errors="coerce")
+    out["Custo Unitário"] = pd.to_numeric(motor["Custo_Unitario_Eirox"], errors="coerce")
+    out["Preço Mercado"] = pd.to_numeric(motor["Preço_Mercado_Eirox"], errors="coerce")
+
+    p = out["Preço Atual"]
+    c = out["Custo Unitário"]
+    m = out["Preço Mercado"]
+
+    out["Margem Atual %"] = np.where(
+        p.gt(0) & c.notna(),
+        ((p-c)/p)*100,
+        np.nan
+    )
+    out["Margem Mercado %"] = np.where(
+        m.gt(0) & c.notna(),
+        ((m-c)/m)*100,
+        np.nan
+    )
+
+    out["Preço p/ Margem Alvo"] = np.where(
+        c.notna() & c.gt(0),
+        c / (1.0-alvo),
+        np.nan
+    )
+
+    preco_alvo = pd.to_numeric(out["Preço p/ Margem Alvo"], errors="coerce")
+
+    # Volume oficial do último mês fechado por EAN.
+    fechado = eirox_v158_ultimo_mes_fechado_memoria(
+        globals().get("venda_rede", pd.DataFrame())
+    )
+    if isinstance(fechado, pd.DataFrame) and not fechado.empty:
+        fechado = fechado[[
+            "EAN","Itens_Mes_Fechado","Venda_Mes_Fechado","Mes_Fechado_Referencia"
+        ]].drop_duplicates("EAN", keep="last").copy()
+        fechado["EAN"] = _ean(fechado["EAN"])
+        out = out.merge(fechado, on="EAN", how="left")
+    else:
+        out["Itens_Mes_Fechado"] = np.nan
+        out["Venda_Mes_Fechado"] = np.nan
+        out["Mes_Fechado_Referencia"] = ""
+
+    q = pd.to_numeric(out["Itens_Mes_Fechado"], errors="coerce").fillna(0)
+
+    # Diagnóstico de rentabilidade.
+    status = pd.Series("RENTABILIDADE OK", index=out.index, dtype=object)
+
+    sem_custo = c.isna() | c.le(0)
+    sem_preco = p.isna() | p.le(0)
+    sem_mercado = m.isna() | m.le(0)
+    margem_atual = pd.to_numeric(out["Margem Atual %"], errors="coerce") / 100.0
+
+    status.loc[sem_custo] = "SEM CUSTO"
+    status.loc[~sem_custo & sem_preco] = "SEM PREÇO"
+    status.loc[~sem_custo & ~sem_preco & sem_mercado & margem_atual.lt(alvo)] = "REVISAR MERCADO"
+
+    pode_preco = (
+        ~sem_custo & ~sem_preco & ~sem_mercado
+        & margem_atual.lt(alvo)
+        & preco_alvo.gt(p)
+        & preco_alvo.le(m)
+    )
+    precisa_custo = (
+        ~sem_custo & ~sem_preco & ~sem_mercado
+        & margem_atual.lt(alvo)
+        & preco_alvo.gt(m)
+    )
+    status.loc[pode_preco] = "AJUSTAR PREÇO"
+    status.loc[precisa_custo] = "NEGOCIAR CUSTO"
+
+    out["Ação Rentabilidade"] = status
+
+    # Preço recomendado no motor de rentabilidade.
+    out["Preço Recomendado Rentabilidade"] = p.astype("float64")
+    out.loc[pode_preco, "Preço Recomendado Rentabilidade"] = preco_alvo[pode_preco]
+    # Quando a meta não cabe no mercado, mostra o teto competitivo como referência.
+    out.loc[precisa_custo, "Preço Recomendado Rentabilidade"] = m[precisa_custo]
+
+    pr = pd.to_numeric(out["Preço Recomendado Rentabilidade"], errors="coerce")
+    out["Aumento Unitário Rentabilidade"] = (pr-p).clip(lower=0).round(2)
+    out["Potencial por Preço"] = (
+        out["Aumento Unitário Rentabilidade"] * q
+    ).round(2)
+
+    # Custo máximo para atingir a meta no preço competitivo.
+    out["Custo Máximo p/ Meta"] = np.where(
+        m.gt(0),
+        m * (1.0-alvo),
+        np.nan
+    )
+    custo_max = pd.to_numeric(out["Custo Máximo p/ Meta"], errors="coerce")
+    out["Redução Custo Necessária"] = (
+        c - custo_max
+    ).clip(lower=0).round(2)
+
+    # Só é redução necessária quando a meta não cabe no preço de mercado.
+    out.loc[~precisa_custo, "Redução Custo Necessária"] = 0.0
+    out["Potencial por Custo"] = (
+        out["Redução Custo Necessária"] * q
+    ).round(2)
+
+    out["Margem Alvo %"] = float(margem_alvo_pct)
+    out["Qtd Último Mês Fechado"] = q
+    out["Venda Último Mês Fechado"] = pd.to_numeric(
+        out["Venda_Mes_Fechado"], errors="coerce"
+    )
+
+    # Gap em pontos percentuais para a meta.
+    out["Gap Margem p.p."] = (
+        float(margem_alvo_pct) -
+        pd.to_numeric(out["Margem Atual %"], errors="coerce")
+    ).clip(lower=0)
+
+    ordem = {
+        "NEGOCIAR CUSTO": 1,
+        "AJUSTAR PREÇO": 2,
+        "REVISAR MERCADO": 3,
+        "SEM CUSTO": 4,
+        "SEM PREÇO": 5,
+        "RENTABILIDADE OK": 6,
+    }
+    out["__ordem"] = out["Ação Rentabilidade"].map(ordem).fillna(99)
+    out = out.sort_values(
+        ["__ordem","Gap Margem p.p.","Potencial por Preço","Potencial por Custo"],
+        ascending=[True,False,False,False],
+        kind="stable"
+    ).drop(columns=["__ordem"])
+
+    return out.reset_index(drop=True)
+
+
+def eirox_v160_render_motor_rentabilidade(base):
+    st.markdown(
+        """
+        <div class="eirox-hero">
+            <div class="eirox-section-title">Motor Financeiro</div>
+            <h1>📈 Motor de Rentabilidade</h1>
+            <p>Analisa margem atual, preço competitivo e necessidade de negociação de custo.</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    _margem_padrao_v160 = 20
+    try:
+        _raw_v160 = float(EIROX_MARGEM_MINIMA_PADRAO)
+        _margem_padrao_v160 = int(round(_raw_v160*100 if _raw_v160 <= 1 else _raw_v160))
+    except Exception:
+        pass
+    _margem_padrao_v160 = min(max(_margem_padrao_v160,5),60)
+
+    margem_alvo = st.slider(
+        "Margem alvo do motor",
+        min_value=5,
+        max_value=60,
+        value=_margem_padrao_v160,
+        step=1,
+        format="%d%%",
+        key="eirox_motor_rentabilidade_margem_v160"
+    )
+
+    rent = eirox_v160_motor_rentabilidade(base, margem_alvo)
+    if not isinstance(rent, pd.DataFrame) or rent.empty:
+        st.info("Não há dados suficientes para calcular o motor de rentabilidade.")
+        return
+
+    margem_valida = pd.to_numeric(rent["Margem Atual %"], errors="coerce").dropna()
+    margem_media = float(margem_valida.mean()) if not margem_valida.empty else np.nan
+
+    abaixo = rent[
+        rent["Ação Rentabilidade"].isin(
+            ["AJUSTAR PREÇO","NEGOCIAR CUSTO","REVISAR MERCADO"]
+        )
+    ]
+    ajustar = rent[rent["Ação Rentabilidade"].eq("AJUSTAR PREÇO")]
+    negociar = rent[rent["Ação Rentabilidade"].eq("NEGOCIAR CUSTO")]
+
+    potencial_preco = pd.to_numeric(
+        ajustar["Potencial por Preço"], errors="coerce"
+    ).fillna(0).sum()
+    potencial_custo = pd.to_numeric(
+        negociar["Potencial por Custo"], errors="coerce"
+    ).fillna(0).sum()
+
+    k1,k2,k3,k4,k5 = st.columns(5)
+    k1.metric(
+        "Margem Média Atual",
+        percentual_br(margem_media) if pd.notna(margem_media) else "—"
+    )
+    k2.metric("Margem Alvo", f"{margem_alvo}%")
+    k3.metric("Produtos abaixo da meta", f"{len(abaixo):,}".replace(",", "."))
+    k4.metric("Potencial por Preço", moeda_br(potencial_preco))
+    k5.metric("Potencial por Custo", moeda_br(potencial_custo))
+
+    st.caption(
+        "Preço: oportunidade de captura ao ajustar até a margem alvo sem ultrapassar "
+        "a referência competitiva. Custo: redução necessária quando a margem alvo "
+        "não cabe no preço de mercado."
+    )
+
+    resumo = (
+        rent["Ação Rentabilidade"]
+        .value_counts()
+        .reindex([
+            "AJUSTAR PREÇO",
+            "NEGOCIAR CUSTO",
+            "RENTABILIDADE OK",
+            "REVISAR MERCADO",
+            "SEM CUSTO",
+            "SEM PREÇO",
+        ], fill_value=0)
+        .rename_axis("Situação")
+        .reset_index(name="Produtos")
+    )
+    eirox_dataframe_brl(resumo, use_container_width=True, hide_index=True)
+
+    st.markdown("### Produtos e oportunidades de rentabilidade")
+
+    _filtro_acao_v160 = st.multiselect(
+        "Filtrar situação",
+        resumo.loc[resumo["Produtos"].gt(0),"Situação"].tolist(),
+        default=[],
+        key="eirox_motor_rentabilidade_filtro_v160"
+    )
+    tabela = rent.copy()
+    if _filtro_acao_v160:
+        tabela = tabela[tabela["Ação Rentabilidade"].isin(_filtro_acao_v160)].copy()
+
+    exibir = tabela[[
+        c for c in [
+            "EAN","Produto","Laboratório","Ação Rentabilidade",
+            "Margem Atual %","Margem Alvo %","Gap Margem p.p.",
+            "Preço Atual","Custo Unitário","Preço Mercado",
+            "Preço p/ Margem Alvo","Preço Recomendado Rentabilidade",
+            "Qtd Último Mês Fechado","Mes_Fechado_Referencia",
+            "Potencial por Preço","Redução Custo Necessária",
+            "Potencial por Custo"
+        ] if c in tabela.columns
+    ]].copy()
+
+    for cmoeda in [
+        "Preço Atual","Custo Unitário","Preço Mercado","Preço p/ Margem Alvo",
+        "Preço Recomendado Rentabilidade","Potencial por Preço",
+        "Redução Custo Necessária","Potencial por Custo"
+    ]:
+        if cmoeda in exibir.columns:
+            exibir[cmoeda] = exibir[cmoeda].apply(moeda_br)
+
+    for cpct in ["Margem Atual %","Margem Alvo %","Gap Margem p.p."]:
+        if cpct in exibir.columns:
+            exibir[cpct] = pd.to_numeric(exibir[cpct], errors="coerce").apply(
+                lambda v: f"{v:.2f}%".replace(".", ",") if pd.notna(v) else ""
+            )
+
+    if "Qtd Último Mês Fechado" in exibir.columns:
+        exibir["Qtd Último Mês Fechado"] = pd.to_numeric(
+            exibir["Qtd Último Mês Fechado"], errors="coerce"
+        ).fillna(0).round(0).astype(int)
+
+    exibir = exibir.replace(
+        {"None":"","nan":"","NaN":"","R$ nan":"","nan%":""}
+    ).fillna("")
+
+    eirox_dataframe_brl(
+        exibir,
+        use_container_width=True,
+        hide_index=True,
+        height=560
+    )
+
+    _xlsx_v160 = eirox_excel_padrao_bytes(
+        exibir,
+        titulo=f"Motor de Rentabilidade - Meta {margem_alvo}%",
+        nome_aba="Rentabilidade"
+    )
+    st.download_button(
+        "📊 Exportar Motor de Rentabilidade",
+        _xlsx_v160,
+        f"motor_rentabilidade_meta_{margem_alvo}.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="eirox_motor_rentabilidade_excel_v160",
+        use_container_width=True,
+        disabled=not bool(_xlsx_v160)
+    )
+
 # ================================================================
 # V1.4.22 — DASHBOARD GERAL / APRESENTAÇÃO COMERCIAL PREMIUM
 # Alteração exclusivamente visual. Não altera DataFrames, regras, filtros,
 # cálculos, recomendações, exportações ou fontes de dados.
 # ================================================================
+# V1.4.60 — seletor de visão do Dashboard Geral.
+_eirox_visao_dashboard_v160 = st.radio(
+    "Visão do Dashboard",
+    ["📊 Visão Executiva", "📈 Motor de Rentabilidade"],
+    horizontal=True,
+    key="eirox_visao_dashboard_v160",
+    label_visibility="collapsed"
+)
+
+if _eirox_visao_dashboard_v160 == "📈 Motor de Rentabilidade":
+    eirox_v160_render_motor_rentabilidade(df_filtrado.copy())
+    st.stop()
+
 try:
     _eirox_rede_dash = (
         eirox_nome_rede_principal()
