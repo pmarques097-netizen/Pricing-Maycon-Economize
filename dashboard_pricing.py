@@ -19546,13 +19546,18 @@ def eirox_v61_render_subir_preco(base):
 # ================================================================
 # V63 - REGRA DEFINITIVA DE SUBIR PREÇO E GANHO REAL
 # ================================================================
+
 def eirox_v63_subidas_validas(base):
     """
-    Regra financeira:
-      SUBIR PREÇO somente quando Preço Sugerido/Competitivo > Preço Atual.
+    V1.4.50 — ganho auditável pela mesma origem exibida em Preço Atual.
 
-    O motor central é a fonte da classificação.
-    A recomendação antiga não pode forçar SUBIR se o mercado estiver abaixo.
+    Regra:
+      Ganho Unitário = Preço Sugerido - Preço Atual
+      Ganho Potencial = Ganho Unitário x Qtd Vendida
+
+    Preço Atual já respeita a prioridade:
+      1) VENDA_TESTE;
+      2) fallback VENDA_FINAL_TESTE do último mês fechado com venda do EAN.
     """
     if not isinstance(base, pd.DataFrame) or base.empty:
         return pd.DataFrame()
@@ -19561,14 +19566,12 @@ def eirox_v63_subidas_validas(base):
     if not isinstance(motor, pd.DataFrame) or motor.empty:
         return pd.DataFrame()
 
-    p = pd.to_numeric(motor["Preço_Base_Calculo_Eirox"], errors="coerce")
+    # Fonte única da conta: exatamente o campo que será mostrado como Preço Atual.
+    p = pd.to_numeric(motor["Preço_Atual_Eirox"], errors="coerce")
     mercado = pd.to_numeric(motor["Preço_Mercado_Eirox"], errors="coerce")
     sugerido = pd.to_numeric(motor["Preço_Sugerido_Eirox"], errors="coerce")
-
-    # Se o motor não tiver preenchido o sugerido, utiliza a referência de mercado.
     sugerido = sugerido.where(sugerido.notna() & (sugerido > 0), mercado)
 
-    # Só é SUBIR quando há aumento real.
     mask_subir = (
         p.notna() & (p > 0)
         & sugerido.notna() & (sugerido > p)
@@ -19579,53 +19582,41 @@ def eirox_v63_subidas_validas(base):
     if m.empty:
         return m
 
-    p = pd.to_numeric(m["Preço_Base_Calculo_Eirox"], errors="coerce")
+    p = pd.to_numeric(m["Preço_Atual_Eirox"], errors="coerce")
     sugerido = pd.to_numeric(m["Preço_Sugerido_Eirox"], errors="coerce")
+    sugerido = sugerido.where(
+        sugerido.notna() & (sugerido > 0),
+        pd.to_numeric(m["Preço_Mercado_Eirox"], errors="coerce")
+    )
 
-    m["Ganho_Lucro_Unitario_Eirox"] = (sugerido - p).clip(lower=0).fillna(0)
+    # Fecha o ganho unitário em centavos antes de multiplicar,
+    # para a conferência manual bater com a tela/Excel.
+    ganho_unit = (sugerido - p).clip(lower=0).round(2)
 
     qtd = pd.to_numeric(
         m.get("Qtd_Vendida_Eirox", pd.Series(0, index=m.index)),
         errors="coerce"
     ).fillna(0)
 
-    ganho_calculado = m["Ganho_Lucro_Unitario_Eirox"] * qtd
+    ganho_pot = (ganho_unit * qtd).round(2)
 
-    # Fallback histórico: em bases sem quantidade vendida, aproveita o ganho
-    # já calculado anteriormente no projeto, somente para ações válidas de subida.
-    c_ganho_hist = _eirox_first_col(
-        m,
-        [
-            "Ganho_Potencial",
-            "Ganho Potencial",
-            "Ganho_Potencial_Final",
-            "Ganho_Potencial_Atualizado",
-            "Ganho Produto"
-        ]
-    )
-
-    if c_ganho_hist:
-        ganho_hist = pd.to_numeric(m[c_ganho_hist], errors="coerce").fillna(0).clip(lower=0)
-        m["Ganho_Lucro_Potencial_Eirox"] = np.where(
-            qtd > 0,
-            ganho_calculado,
-            ganho_hist
-        )
-    else:
-        m["Ganho_Lucro_Potencial_Eirox"] = ganho_calculado
-
-    m["Impacto_Unitario_Eirox"] = m["Ganho_Lucro_Unitario_Eirox"]
-    m["Impacto_Financeiro_Eirox"] = m["Ganho_Lucro_Potencial_Eirox"]
-
-    # Indicadores úteis para auditoria.
+    m["Ganho_Lucro_Unitario_Eirox"] = ganho_unit
+    m["Ganho_Lucro_Potencial_Eirox"] = ganho_pot
+    m["Impacto_Unitario_Eirox"] = ganho_unit
+    m["Impacto_Financeiro_Eirox"] = ganho_pot
     m["Diferença_Subida_%_Eirox"] = np.where(
-        p > 0,
-        (sugerido - p) / p,
-        np.nan
+        p > 0, (sugerido - p) / p, np.nan
     )
     m["Qtd_Base_Ganho_Eirox"] = qtd
 
+    # Auditoria explícita: o preço usado na conta é o próprio Preço Atual.
+    m["Preço_Usado_no_Ganho_Eirox"] = p
+    m["Conferencia_Ganho_Eirox"] = (
+        m["Ganho_Lucro_Unitario_Eirox"] * m["Qtd_Base_Ganho_Eirox"]
+    ).round(2)
+
     return m
+
 
 
 
@@ -19952,6 +19943,10 @@ def eirox_v63_tabela_subidas(base):
         motor["Qtd_Base_Ganho_Eirox"], errors="coerce"
     ).fillna(0).round(0).astype(int)
     out["Ganho de Lucro Potencial"] = motor["Ganho_Lucro_Potencial_Eirox"].apply(_eirox_moeda_num)
+    # V1.4.50 — preço efetivamente usado no cálculo do ganho.
+    out["Preço Usado no Ganho"] = motor["Preço_Usado_no_Ganho_Eirox"].apply(
+        lambda x: _eirox_moeda_num(x) if pd.notna(x) and float(x) > 0 else ""
+    )
     out["Custo Unitário"] = motor["Custo_Unitario_Eirox"].apply(_eirox_moeda_num)
     out["Margem Atual"] = motor["Margem_Atual_Eirox"].apply(_eirox_pct_num)
 
