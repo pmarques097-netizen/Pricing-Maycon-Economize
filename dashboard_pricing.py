@@ -9192,95 +9192,99 @@ def _v143_original_recalcular_ganho_inteligente(df_base, venda_rede_base, histor
 
 
 
-def eirox_v157_ultimo_mes_fechado_memoria(venda_base):
-    """
-    Usa a VENDA_FINAL_TESTE já carregada em memória pelo próprio app.
-    Para cada EAN, escolhe o último mês fechado COM venda e retorna
-    Venda, Itens e Preço médio do mês (Venda / Itens).
-    """
+def eirox_v158_ultimo_mes_fechado_memoria(venda_base):
+    """Último mês fechado com venda por EAN usando apenas funções já disponíveis."""
     vazio = pd.DataFrame(columns=[
         "EAN","Venda_Mes_Fechado","Itens_Mes_Fechado",
         "Mes_Fechado_Referencia","Preco_Fallback_Mes_Fechado"
     ])
-    if not isinstance(venda_base, pd.DataFrame) or venda_base.empty:
+    if not isinstance(venda_base,pd.DataFrame) or venda_base.empty:
         return vazio
 
-    b = venda_base.copy()
-    b.columns = b.columns.astype(str).str.strip()
+    b=venda_base.copy()
+    b.columns=b.columns.astype(str).str.strip()
 
-    ce = _eirox_first_col(b, [
+    def _local_col(df, candidatos):
+        norm={re.sub(r"[^a-z0-9]","",str(c).lower()):c for c in df.columns}
+        for cand in candidatos:
+            k=re.sub(r"[^a-z0-9]","",str(cand).lower())
+            if k in norm:
+                return norm[k]
+        return None
+
+    ce=_local_col(b,[
         "EAN","EAN (GTIN)","GTIN","Cód. Barras/Etiq.","Cod. Barras/Etiq.",
         "Código de Barras","Codigo de Barras"
     ])
-    cv = _eirox_first_col(b, [
+    cv=_local_col(b,[
         "Venda","Valor Venda","Faturamento","Valor Líquido","Valor Liquido",
         "Total Venda","Valor Total"
     ])
-    cq = _eirox_first_col(b, [
+    cq=_local_col(b,[
         "Itens","Item","Quantidade","Qtd","QTD","Qtde",
         "Quantidade Vendida","Qtd Vendida","Unidades"
     ])
-    cc = _eirox_first_col(b, [
+    cc=_local_col(b,[
         "Ano-mês","Ano-mes","Ano Mes","Ano_Mes","Competência","Competencia",
         "Mês","Mes","Data Venda","Data_Venda","Data"
     ])
     if not ce or not cv or not cq or not cc:
         return vazio
 
-    b["EAN"] = _ean(b[ce])
-    b["__venda_v157"] = _num(b[cv])
-    b["__itens_v157"] = _num(b[cq])
+    b["EAN"]=_ean(b[ce])
+    b["__venda_v158"]=_num(b[cv])
+    b["__itens_v158"]=_num(b[cq])
 
-    s = b[cc]
-    txt = s.astype(str).str.strip()
-    ext = txt.str.extract(r"(20\d{2})\D*([01]\d)")
-    comp = pd.Series(np.nan,index=b.index,dtype="float64")
-    ok = ext[0].notna() & ext[1].notna()
-    comp.loc[ok] = (
+    s=b[cc]
+    txt=s.astype(str).str.strip()
+    ext=txt.str.extract(r"(20\d{2})\D*([01]\d)")
+    comp=pd.Series(np.nan,index=b.index,dtype="float64")
+    ok=ext[0].notna() & ext[1].notna()
+    comp.loc[ok]=(
         pd.to_numeric(ext.loc[ok,0],errors="coerce")*100
         + pd.to_numeric(ext.loc[ok,1],errors="coerce")
     )
-    faltou = comp.isna()
+    faltou=comp.isna()
     if faltou.any():
-        dt = pd.to_datetime(s.loc[faltou],errors="coerce",dayfirst=True,format="mixed")
-        comp.loc[faltou] = np.where(
-            dt.notna(), dt.dt.year*100+dt.dt.month, np.nan
+        dt=pd.to_datetime(s.loc[faltou],errors="coerce",dayfirst=True,format="mixed")
+        comp.loc[faltou]=np.where(
+            dt.notna(),dt.dt.year*100+dt.dt.month,np.nan
         )
-    b["__comp_v157"] = pd.to_numeric(comp,errors="coerce")
+    b["__comp_v158"]=pd.to_numeric(comp,errors="coerce")
 
-    hoje = pd.Timestamp.now()
-    mes_atual = hoje.year*100+hoje.month
-    b = b[
+    hoje=pd.Timestamp.now()
+    mes_atual=hoje.year*100+hoje.month
+    b=b[
         b["EAN"].ne("")
-        & b["__venda_v157"].gt(0)
-        & b["__itens_v157"].gt(0)
-        & b["__comp_v157"].notna()
-        & b["__comp_v157"].lt(mes_atual)
+        & b["__venda_v158"].gt(0)
+        & b["__itens_v158"].gt(0)
+        & b["__comp_v158"].notna()
+        & b["__comp_v158"].lt(mes_atual)
     ].copy()
     if b.empty:
         return vazio
 
-    mensal = (
-        b.groupby(["EAN","__comp_v157"],as_index=False)
+    mensal=(
+        b.groupby(["EAN","__comp_v158"],as_index=False)
         .agg(
-            Venda_Mes_Fechado=("__venda_v157","sum"),
-            Itens_Mes_Fechado=("__itens_v157","sum")
+            Venda_Mes_Fechado=("__venda_v158","sum"),
+            Itens_Mes_Fechado=("__itens_v158","sum")
         )
     )
-    mensal = mensal[
+    mensal=mensal[
         mensal["Venda_Mes_Fechado"].gt(0)
         & mensal["Itens_Mes_Fechado"].gt(0)
     ].copy()
     if mensal.empty:
         return vazio
 
-    mensal = mensal.sort_values(["EAN","__comp_v157"],kind="stable")
-    ult = mensal.groupby("EAN",sort=False).tail(1).copy()
-    ult["Mes_Fechado_Referencia"] = ult["__comp_v157"].apply(
+    mensal=mensal.sort_values(["EAN","__comp_v158"],kind="stable")
+    ult=mensal.groupby("EAN",sort=False).tail(1).copy()
+    ult["Mes_Fechado_Referencia"]=ult["__comp_v158"].apply(
         lambda x:f"{int(x)//100:04d}-{int(x)%100:02d}"
     )
-    ult["Preco_Fallback_Mes_Fechado"] = (
-        ult["Venda_Mes_Fechado"] /
+    ult["Preco_Fallback_Mes_Fechado"]=(
+        ult["Venda_Mes_Fechado"]/
         ult["Itens_Mes_Fechado"].replace(0,np.nan)
     )
     return ult[[
@@ -9288,16 +9292,11 @@ def eirox_v157_ultimo_mes_fechado_memoria(venda_base):
         "Mes_Fechado_Referencia","Preco_Fallback_Mes_Fechado"
     ]].reset_index(drop=True)
 
+
 def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
     """
-    V1.4.57 — simulador usando a VENDA_FINAL_TESTE já carregada em memória.
-
-    Preço Atual:
-      VENDA_TESTE; se ausente, fallback do último mês fechado por EAN.
-    Volume:
-      somente Itens do último mês fechado com venda daquele EAN.
-    Ganho:
-      (Preço Sugerido - Preço Atual) x Itens do mês fechado.
+    V1.4.58 — simulador independente de funções definidas depois da carga inicial.
+    Corrige o NameError no Streamlit Cloud e mantém a regra aprovada.
     """
     if not isinstance(df_base,pd.DataFrame) or df_base.empty:
         return (
@@ -9306,113 +9305,178 @@ def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
             "sem_base"
         )
 
-    df_calc = eirox_v143_aplicar_preco(df_base.copy())
+    df_calc=df_base.copy()
+    df_calc.columns=df_calc.columns.astype(str).str.strip()
 
-    try:
-        motor = eirox_motor_oportunidades(df_calc)
-    except Exception:
-        motor = pd.DataFrame()
+    def _local_col(df,candidatos):
+        norm={re.sub(r"[^a-z0-9]","",str(c).lower()):c for c in df.columns}
+        for cand in candidatos:
+            k=re.sub(r"[^a-z0-9]","",str(cand).lower())
+            if k in norm:
+                return norm[k]
+        return None
 
-    # Prioriza a base que o app já conseguiu carregar no Cloud.
-    fechado = eirox_v157_ultimo_mes_fechado_memoria(venda_rede_base)
-    if not isinstance(fechado,pd.DataFrame) or fechado.empty:
-        try:
-            fechado = eirox_v146_ultimo_mes_fechado()
-        except Exception:
-            fechado = pd.DataFrame()
+    ce_base=_local_col(df_calc,["EAN","EAN (GTIN)","GTIN","Código de Barras","Codigo de Barras"])
+    if not ce_base:
+        return df_calc,pd.DataFrame(),"sem_ean_base"
+    df_calc["EAN"]=_ean(df_calc[ce_base])
 
-    if (
-        not isinstance(motor,pd.DataFrame) or motor.empty
-        or not isinstance(fechado,pd.DataFrame) or fechado.empty
-    ):
-        if "Ganho_Potencial" not in df_calc.columns:
-            df_calc["Ganho_Potencial"]=0.0
+    # Último mês fechado por EAN diretamente da VENDA_FINAL_TESTE em memória.
+    fechado=eirox_v158_ultimo_mes_fechado_memoria(venda_rede_base)
+    if fechado.empty:
         return df_calc,pd.DataFrame(),"sem_base_mensal_fechada"
 
-    ce = _eirox_first_col(motor,["EAN","EAN (GTIN)","GTIN"])
-    if not ce:
-        return df_calc,pd.DataFrame(),"sem_ean"
+    # Preço atual prioritário: VENDA_TESTE / Principal pela última Data Emissão.
+    pesquisa=eirox_v143_ultima_pesquisa()
+    atual=pd.DataFrame(columns=["EAN","Preco_Atual","Data_Ultima_Venda"])
+    if isinstance(pesquisa,pd.DataFrame) and not pesquisa.empty:
+        p=pesquisa.copy()
+        p["EAN"]=_ean(p["EAN"])
+        atual=p[["EAN","Preco_Ultima_Venda","Data_Ultima_Venda"]].copy()
+        atual=atual.rename(columns={"Preco_Ultima_Venda":"Preco_Atual"})
+        atual=atual.drop_duplicates("EAN",keep="last")
 
-    sim=motor.copy()
-    sim["EAN"]=_ean(sim[ce])
-    sim=sim.merge(
-        fechado[[
-            "EAN","Venda_Mes_Fechado","Itens_Mes_Fechado",
-            "Mes_Fechado_Referencia"
-        ]].drop_duplicates("EAN",keep="last"),
-        on="EAN",how="inner"
+    # Fallback: Venda / Itens do último mês fechado.
+    preco_fallback=fechado[[
+        "EAN","Preco_Fallback_Mes_Fechado","Mes_Fechado_Referencia"
+    ]].drop_duplicates("EAN",keep="last").copy()
+
+    mapa=preco_fallback.merge(atual,on="EAN",how="left")
+    pa=pd.to_numeric(mapa["Preco_Atual"],errors="coerce")
+    fb=pd.to_numeric(mapa["Preco_Fallback_Mes_Fechado"],errors="coerce")
+    mapa["Preco_Atual_Final"]=pa.where(pa.notna() & pa.gt(0),fb)
+    mapa["Fonte_Preco"]=np.where(
+        pa.notna() & pa.gt(0),"ÚLTIMA VENDA","ÚLTIMO MÊS FECHADO"
     )
-    if sim.empty:
-        return df_calc,pd.DataFrame(),"sem_ean_com_mes_fechado"
 
-    p=pd.to_numeric(sim["Preço_Atual_Eirox"],errors="coerce")
-    s=pd.to_numeric(sim["Preço_Sugerido_Eirox"],errors="coerce")
+    # Preço sugerido/referência competitiva pelo histórico de pesquisa.
+    hist=historico_base.copy() if isinstance(historico_base,pd.DataFrame) else pd.DataFrame()
+    if hist.empty:
+        return df_calc,pd.DataFrame(),"sem_historico_pesquisa"
+    hist.columns=hist.columns.astype(str).str.strip()
+
+    ce_hist=_local_col(hist,["EAN","EAN (GTIN)","GTIN","Código de Barras","Codigo de Barras"])
+    cp_hist=_local_col(hist,["Preço (R$)","Preco (R$)","Preço","Preco","Valor"])
+    cprod_hist=_local_col(hist,["Produto","Descrição","Descricao","Termo Pesquisado"])
+    crede_hist=_local_col(hist,["Rede","Rede Concorrente","Bandeira","Grupo","Concorrente"])
+    clo_hist=_local_col(hist,["Farmácia","Farmacia","Loja","Estabelecimento"])
+    cdata_hist=_local_col(hist,["Data","Data Pesquisa","Data da Pesquisa","Dt Pesquisa","Data_Hora","Data Hora"])
+    if not ce_hist or not cp_hist:
+        return df_calc,pd.DataFrame(),"historico_sem_colunas"
+
+    hist["EAN"]=_ean(hist[ce_hist])
+    hist["__preco_v158"]=_num(hist[cp_hist])
+    hist=hist[
+        hist["EAN"].ne("")
+        & hist["__preco_v158"].gt(0)
+        & hist["__preco_v158"].le(5000)
+    ].copy()
+    if hist.empty:
+        return df_calc,pd.DataFrame(),"historico_sem_preco"
+
+    mercado=(
+        hist.groupby("EAN")["__preco_v158"]
+        .apply(preco_referencia_seguro)
+        .reset_index()
+        .rename(columns={"__preco_v158":"Preco_Sugerido_Mercado"})
+    )
+
+    # Metadados do preço de referência e do menor preço.
+    hist_ref=hist.merge(mercado,on="EAN",how="left")
+    hist_ref["__dif_ref_v158"]=(
+        hist_ref["__preco_v158"]-hist_ref["Preco_Sugerido_Mercado"]
+    ).abs()
+
+    idx_ref=hist_ref.groupby("EAN")["__dif_ref_v158"].idxmin()
+    idx_min=hist_ref.groupby("EAN")["__preco_v158"].idxmin()
+
+    ref=hist_ref.loc[idx_ref].copy()
+    mn=hist_ref.loc[idx_min].copy()
+
+    meta=pd.DataFrame({"EAN":ref["EAN"].astype(str)})
+    meta["Rede_Preco_Maximo_Competitivo"]=(
+        ref[crede_hist].astype(str) if crede_hist else
+        (ref[clo_hist].astype(str) if clo_hist else "")
+    )
+    meta["Data_Preco_Maximo_Competitivo"]=ref[cdata_hist] if cdata_hist else ""
+
+    meta_min=pd.DataFrame({"EAN":mn["EAN"].astype(str)})
+    meta_min["Menor_Preco"]=mn["__preco_v158"]
+    meta_min["Rede_Menor_Preco"]=(
+        mn[crede_hist].astype(str) if crede_hist else
+        (mn[clo_hist].astype(str) if clo_hist else "")
+    )
+    meta_min["Data_Menor_Preco"]=mn[cdata_hist] if cdata_hist else ""
+
+    # Produto: prioriza base mestre, depois histórico.
+    produto=pd.DataFrame({"EAN":df_calc["EAN"]})
+    cprod_base=_local_col(df_calc,["Produto","Descrição","Descricao"])
+    if cprod_base:
+        produto["Produto_Simulador"]=df_calc[cprod_base].astype(str)
+    elif cprod_hist:
+        prod_hist=(
+            hist.groupby("EAN")[cprod_hist]
+            .first()
+            .reset_index()
+            .rename(columns={cprod_hist:"Produto_Simulador"})
+        )
+        produto=produto[["EAN"]].drop_duplicates().merge(prod_hist,on="EAN",how="left")
+    produto=produto.drop_duplicates("EAN",keep="first")
+
+    sim=(
+        fechado.merge(mapa[["EAN","Preco_Atual_Final","Fonte_Preco","Data_Ultima_Venda"]],on="EAN",how="left")
+        .merge(mercado,on="EAN",how="inner")
+        .merge(produto,on="EAN",how="left")
+        .merge(meta,on="EAN",how="left")
+        .merge(meta_min,on="EAN",how="left")
+    )
+
+    p=pd.to_numeric(sim["Preco_Atual_Final"],errors="coerce")
+    s=pd.to_numeric(sim["Preco_Sugerido_Mercado"],errors="coerce")
     q=pd.to_numeric(sim["Itens_Mes_Fechado"],errors="coerce")
     venda=pd.to_numeric(sim["Venda_Mes_Fechado"],errors="coerce")
 
-    # V1.4.57: o simulador é matemático. Não depende do nome da recomendação.
-    # Toda linha com preço sugerido maior que o preço atual e volume fechado
-    # é uma oportunidade mensurável de captura por reajuste.
-    mask = p.gt(0) & s.gt(p) & q.gt(0) & venda.gt(0)
+    mask=p.gt(0) & s.gt(p) & q.gt(0) & venda.gt(0)
     sim=sim.loc[mask].copy()
     if sim.empty:
         return df_calc,pd.DataFrame(),"sem_gap_positivo"
 
-    p=pd.to_numeric(sim["Preço_Atual_Eirox"],errors="coerce")
-    s=pd.to_numeric(sim["Preço_Sugerido_Eirox"],errors="coerce")
+    p=pd.to_numeric(sim["Preco_Atual_Final"],errors="coerce")
+    s=pd.to_numeric(sim["Preco_Sugerido_Mercado"],errors="coerce")
     q=pd.to_numeric(sim["Itens_Mes_Fechado"],errors="coerce")
 
     sim["Qtd_Vendida_Mes_Anterior"]=q
     sim["Preco_Atual"]=p
-    sim["Preco_Sugerido_Mercado"]=s
     sim["Venda_Real_Mes_Fechado"]=pd.to_numeric(sim["Venda_Mes_Fechado"],errors="coerce")
     sim["Venda_Preco_Antigo"]=(p*q).round(2)
     sim["Venda_Projetada_Preco_Sugerido"]=(s*q).round(2)
     sim["Ganho_Unitario"]=(s-p).round(2)
     sim["Ganho_Potencial_Simulador"]=(sim["Ganho_Unitario"]*q).round(2)
 
-    cprod=_eirox_first_col(sim,["Produto","Descrição","Descricao","Produto na Pesquisa"])
-    if cprod:
-        sim["Produto_Simulador"]=sim[cprod].astype(str)
-
-    if "Menor Preço Concorrente" in sim.columns:
-        sim["Menor_Preco"]=pd.to_numeric(sim["Menor Preço Concorrente"],errors="coerce")
-    else:
-        sim["Menor_Preco"]=pd.to_numeric(sim["Preço_Mercado_Eirox"],errors="coerce")
-
-    if "Loja do Menor Preço" in sim.columns:
-        sim["Loja_Menor_Preco"]=sim["Loja do Menor Preço"]
-        sim["Rede_Menor_Preco"]=sim["Loja do Menor Preço"]
-        sim["Rede_Preco_Maximo_Competitivo"]=sim["Loja do Menor Preço"]
-    if "Data da Pesquisa" in sim.columns:
-        sim["Data_Menor_Preco"]=sim["Data da Pesquisa"]
-        sim["Data_Preco_Maximo_Competitivo"]=sim["Data da Pesquisa"]
-
     ganho=(
         sim.groupby("EAN",as_index=False)["Ganho_Potencial_Simulador"]
         .sum()
         .rename(columns={"Ganho_Potencial_Simulador":"Ganho_Potencial_Reconciliado"})
     )
-    base_out=df_calc.copy()
-    if "EAN" in base_out.columns:
-        base_out["EAN"]=_ean(base_out["EAN"])
-        base_out=base_out.merge(ganho,on="EAN",how="left")
-        base_out["Ganho_Potencial"]=pd.to_numeric(
-            base_out["Ganho_Potencial_Reconciliado"],errors="coerce"
-        ).fillna(0)
-        base_out["Ganho_Potencial_Atualizado"]=base_out["Ganho_Potencial"]
-        base_out["Ganho_Potencial_Final"]=base_out["Ganho_Potencial"]
+    base_out=df_calc.merge(ganho,on="EAN",how="left")
+    base_out["Ganho_Potencial"]=pd.to_numeric(
+        base_out["Ganho_Potencial_Reconciliado"],errors="coerce"
+    ).fillna(0)
+    base_out["Ganho_Potencial_Atualizado"]=base_out["Ganho_Potencial"]
+    base_out["Ganho_Potencial_Final"]=base_out["Ganho_Potencial"]
 
     manter=[
-        "EAN","Produto_Simulador","Qtd_Vendida_Mes_Anterior",
-        "Venda_Real_Mes_Fechado","Venda_Preco_Antigo","Preco_Atual",
-        "Preco_Sugerido_Mercado","Venda_Projetada_Preco_Sugerido",
-        "Ganho_Unitario","Ganho_Potencial_Simulador","Mes_Fechado_Referencia",
-        "Menor_Preco","Rede_Menor_Preco","Loja_Menor_Preco","Data_Menor_Preco",
+        "EAN","Produto_Simulador","Mes_Fechado_Referencia",
+        "Qtd_Vendida_Mes_Anterior","Venda_Real_Mes_Fechado",
+        "Venda_Preco_Antigo","Preco_Atual","Preco_Sugerido_Mercado",
+        "Venda_Projetada_Preco_Sugerido","Ganho_Unitario",
+        "Ganho_Potencial_Simulador","Fonte_Preco","Data_Ultima_Venda",
+        "Menor_Preco","Rede_Menor_Preco","Data_Menor_Preco",
         "Rede_Preco_Maximo_Competitivo","Data_Preco_Maximo_Competitivo"
     ]
     sim=sim[[c for c in manter if c in sim.columns]].copy()
-    return base_out,sim.reset_index(drop=True),"ultimo_mes_fechado_memoria"
+    return base_out,sim.reset_index(drop=True),"simulador_v158_ok"
+
 
 
 
