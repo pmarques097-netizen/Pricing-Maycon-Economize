@@ -939,6 +939,103 @@ def garantir_colunas_padrao_dashboard(df_base):
         return df_base
 
 
+
+
+def eirox_ultima_venda_por_ean(venda, ean_col, qtd_col=None, preco_col=None, valor_total_col=None):
+    """Regra global V1.4.38: preço do Principal = última venda por data/hora.
+
+    A quantidade continua agregada por EAN para métricas de volume, porém o
+    preço de referência nunca é média. Se houver preço unitário na venda, usa
+    o preço da linha mais recente. Se houver apenas valor total + quantidade,
+    calcula o unitário da linha mais recente. Em empate/ausência de data,
+    preserva a última ocorrência física da fonte.
+    """
+    if not isinstance(venda, pd.DataFrame) or venda.empty or not ean_col or ean_col not in venda.columns:
+        return pd.DataFrame(columns=["EAN", "Preco_Ultima_Venda", "Data_Ultima_Venda"])
+
+    v = venda.copy()
+    v["EAN"] = (
+        v[ean_col].astype(str)
+        .str.replace(".0", "", regex=False)
+        .str.replace(r"\D", "", regex=True)
+        .str.strip()
+    )
+    v["_ORDEM_ULT_VENDA"] = range(len(v))
+
+    # Procura a data/hora real da venda com prioridade para campos específicos.
+    data_col = None
+    candidatos_data = [
+        "Data Hora Venda", "Data/Hora Venda", "DataHora Venda", "DataHoraVenda",
+        "Data da Venda", "Data Venda", "Data_Venda", "Data Movimento",
+        "Data do Movimento", "DataHora", "Data Hora", "Data_Hora",
+        "Data Emissão", "Data Emissao", "Data da Pesquisa", "Data Pesquisa",
+        "Data", "DATA"
+    ]
+    mapa_cols = {str(c).strip().casefold(): c for c in v.columns}
+    for nome in candidatos_data:
+        c = mapa_cols.get(nome.casefold())
+        if c is not None:
+            data_col = c
+            break
+    if data_col is None:
+        for c in v.columns:
+            n = str(c).strip().casefold()
+            if "data" in n or "date" in n:
+                data_col = c
+                break
+
+    if data_col is not None:
+        s = v[data_col].fillna("").astype(str).str.strip()
+        s = s.str.replace(
+            r"\s+(AMT|AMST|BRT|BRST|GMT(?:[+-]\d+)?|UTC(?:[+-]\d+)?)\s+",
+            " ", regex=True, flags=re.IGNORECASE
+        )
+        try:
+            dt = pd.to_datetime(s, errors="coerce", dayfirst=True, format="mixed")
+        except Exception:
+            dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+        v["_DATA_ULT_VENDA"] = dt
+    else:
+        v["_DATA_ULT_VENDA"] = pd.NaT
+
+    # Calcula o preço unitário de CADA ocorrência antes de escolher a última.
+    v["_PRECO_UNIT_ULT_VENDA"] = np.nan
+    if preco_col and preco_col in v.columns:
+        try:
+            v["_PRECO_UNIT_ULT_VENDA"] = converter_numero_brasil(v[preco_col])
+        except Exception:
+            v["_PRECO_UNIT_ULT_VENDA"] = pd.to_numeric(v[preco_col], errors="coerce")
+    elif valor_total_col and valor_total_col in v.columns and qtd_col and qtd_col in v.columns:
+        try:
+            total = converter_numero_brasil(v[valor_total_col])
+            qtd = converter_numero_brasil(v[qtd_col])
+        except Exception:
+            total = pd.to_numeric(v[valor_total_col], errors="coerce")
+            qtd = pd.to_numeric(v[qtd_col], errors="coerce")
+        v["_PRECO_UNIT_ULT_VENDA"] = total / qtd.replace(0, np.nan)
+
+    v = v[
+        v["EAN"].ne("") &
+        pd.to_numeric(v["_PRECO_UNIT_ULT_VENDA"], errors="coerce").notna() &
+        (pd.to_numeric(v["_PRECO_UNIT_ULT_VENDA"], errors="coerce") > 0)
+    ].copy()
+    if v.empty:
+        return pd.DataFrame(columns=["EAN", "Preco_Ultima_Venda", "Data_Ultima_Venda"])
+
+    v["_DATA_ORD_ULT_VENDA"] = v["_DATA_ULT_VENDA"].fillna(pd.Timestamp.min)
+    ult = (
+        v.sort_values(["EAN", "_DATA_ORD_ULT_VENDA", "_ORDEM_ULT_VENDA"], kind="stable")
+         .groupby("EAN", as_index=False, dropna=False)
+         .tail(1)
+         .copy()
+    )
+    ult = ult[["EAN", "_PRECO_UNIT_ULT_VENDA", "_DATA_ULT_VENDA"]].rename(columns={
+        "_PRECO_UNIT_ULT_VENDA": "Preco_Ultima_Venda",
+        "_DATA_ULT_VENDA": "Data_Ultima_Venda",
+    })
+    return ult.reset_index(drop=True)
+
+
 def construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque):
     try:
         h = historico.copy() if isinstance(historico, pd.DataFrame) else pd.DataFrame()
@@ -1004,13 +1101,21 @@ def construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque
             tmp["EAN"] = v[col_ean_v].apply(_normalizar_ean_eirox) if col_ean_v else ""
             tmp["Qtd_Vendida_Mes_Anterior"] = v[col_qtd_v].apply(_numero_br_para_float_eirox) if col_qtd_v else 0
             tmp["Venda_Preco_Antigo"] = v[col_val_v].apply(_numero_br_para_float_eirox) if col_val_v else np.nan
-            tmp["Preco_Atual_Venda"] = v[col_preco_v].apply(_numero_br_para_float_eirox) if col_preco_v else np.nan
 
             vend = tmp.groupby("EAN", as_index=False).agg(
                 Qtd_Vendida_Mes_Anterior=("Qtd_Vendida_Mes_Anterior", "sum"),
-                Venda_Preco_Antigo=("Venda_Preco_Antigo", "sum"),
-                Preco_Atual_Venda=("Preco_Atual_Venda", "mean")
+                Venda_Preco_Antigo=("Venda_Preco_Antigo", "sum")
             )
+            # V1.4.38: preço atual nunca é média; é a última venda por data/hora.
+            _ult = eirox_ultima_venda_por_ean(
+                v, col_ean_v, qtd_col=col_qtd_v, preco_col=col_preco_v,
+                valor_total_col=col_val_v
+            )
+            if not _ult.empty:
+                vend = vend.merge(_ult[["EAN", "Preco_Ultima_Venda"]], on="EAN", how="left")
+                vend = vend.rename(columns={"Preco_Ultima_Venda": "Preco_Atual_Venda"})
+            else:
+                vend["Preco_Atual_Venda"] = np.nan
             agg = agg.merge(vend, on="EAN", how="left")
 
         if not c.empty:
@@ -8609,40 +8714,36 @@ def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
 
     hist = hist[(hist[col_preco_hist] > 0) & (hist[col_preco_hist] <= 5000)].copy()
 
-    if col_preco_venda:
+    # V1.4.38 — REGRA GLOBAL DO PRINCIPAL:
+    # volume é somado, porém Preço Atual é SEMPRE a última venda pela data/hora.
+    venda[col_qtd] = converter_numero_brasil(venda[col_qtd])
+    vendas = (
+        venda.dropna(subset=["EAN", col_qtd])
+        .groupby("EAN", as_index=False)
+        .agg(Qtd_Vendida_Mes_Anterior=(col_qtd, "sum"))
+    )
 
+    if col_valor_total:
+        venda[col_valor_total] = converter_numero_brasil(venda[col_valor_total])
+        _tot = (
+            venda.dropna(subset=["EAN", col_valor_total])
+            .groupby("EAN", as_index=False)
+            .agg(Venda_Preco_Antigo=(col_valor_total, "sum"))
+        )
+        vendas = vendas.merge(_tot, on="EAN", how="left")
+
+    if col_preco_venda:
         venda[col_preco_venda] = converter_numero_brasil(venda[col_preco_venda])
 
-        vendas = (
-            venda
-            .dropna(subset=["EAN", col_qtd, col_preco_venda])
-            .groupby("EAN")
-            .agg(
-                Qtd_Vendida_Mes_Anterior=(col_qtd, "sum"),
-                Preco_Atual=(col_preco_venda, "mean")
-            )
-            .reset_index()
-        )
-
+    _ult_venda = eirox_ultima_venda_por_ean(
+        venda, col_ean_venda, qtd_col=col_qtd, preco_col=col_preco_venda,
+        valor_total_col=col_valor_total
+    )
+    vendas = vendas.merge(_ult_venda, on="EAN", how="left")
+    vendas = vendas.rename(columns={"Preco_Ultima_Venda": "Preco_Atual"})
+    vendas = vendas[vendas["Qtd_Vendida_Mes_Anterior"] > 0].copy()
+    if "Venda_Preco_Antigo" not in vendas.columns:
         vendas["Venda_Preco_Antigo"] = vendas["Qtd_Vendida_Mes_Anterior"] * vendas["Preco_Atual"]
-
-    else:
-
-        venda[col_valor_total] = converter_numero_brasil(venda[col_valor_total])
-
-        vendas = (
-            venda
-            .dropna(subset=["EAN", col_qtd, col_valor_total])
-            .groupby("EAN")
-            .agg(
-                Qtd_Vendida_Mes_Anterior=(col_qtd, "sum"),
-                Venda_Preco_Antigo=(col_valor_total, "sum")
-            )
-            .reset_index()
-        )
-
-        vendas = vendas[vendas["Qtd_Vendida_Mes_Anterior"] > 0].copy()
-        vendas["Preco_Atual"] = vendas["Venda_Preco_Antigo"] / vendas["Qtd_Vendida_Mes_Anterior"]
 
     mercado = (
         hist
@@ -8954,16 +9055,16 @@ def criar_simulacao_por_historico(historico_base):
     if base.empty:
         return pd.DataFrame()
 
-    simulacao = (
-        base
-        .groupby("EAN")
-        .agg(
-            Qtd_Vendida_Mes_Anterior=("Preco_Base", "count"),
-            Preco_Atual=("Preco_Base", "mean"),
-            Preco_Sugerido_Mercado=("Preco_Base", _preco_ref_seguro)
-        )
-        .reset_index()
+    _qtd_hist = base.groupby("EAN", as_index=False).agg(
+        Qtd_Vendida_Mes_Anterior=("Preco_Base", "count"),
+        Preco_Sugerido_Mercado=("Preco_Base", _preco_ref_seguro)
     )
+    # Fallback histórico também respeita última ocorrência/data, nunca média.
+    _ult_hist = eirox_ultima_venda_por_ean(
+        base, "EAN", preco_col="Preco_Base"
+    )
+    simulacao = _qtd_hist.merge(_ult_hist[["EAN", "Preco_Ultima_Venda"]], on="EAN", how="left")
+    simulacao = simulacao.rename(columns={"Preco_Ultima_Venda": "Preco_Atual"})
 
     if col_produto:
         produto_ref = (
@@ -9416,11 +9517,11 @@ def _cluster2_calcular_sugestoes(base_cluster, loja_ref, raio_km=2.0):
         )
 
         if not principal_loja_ref.empty:
-            atual = (
-                principal_loja_ref
-                .groupby("EAN", dropna=False)
-                .agg(Preço_Atual_Principal=("Preço", "mean"))
-                .reset_index()
+            _ult_cluster = eirox_ultima_venda_por_ean(
+                principal_loja_ref, "EAN", preco_col="Preço"
+            )
+            atual = _ult_cluster[["EAN", "Preco_Ultima_Venda"]].rename(
+                columns={"Preco_Ultima_Venda": "Preço_Atual_Principal"}
             )
 
             sugestao = sugestao.merge(atual, on="EAN", how="left")
@@ -17801,6 +17902,7 @@ def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
     d = base.copy()
 
     c_preco = _eirox_first_col(d, [
+        "Preco_Ultima_Venda", "Preço Última Venda", "Preco Ultima Venda",
         "Preço Principal","Preco Principal","Preço_Atual","Preco_Atual",
         "Preço Atual","Preco Atual","Preco_Medio","Preço Médio",
         "Preço (R$)","Preco (R$)"
