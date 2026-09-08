@@ -28867,6 +28867,122 @@ if _eirox_visao_dashboard_v160 == "📈 Motor de Rentabilidade":
     st.stop()
 
 if _eirox_visao_dashboard_v160 == "🤖 Índice Eirox Calculado":
+    # V1.4.65 — diagnóstico de qualidade para o Índice Eirox.
+    # O objetivo é nunca apresentar um quadro vazio ou um zero sem contexto.
+    _q_total_v165 = 0
+    _q_completo_v165 = 0
+    _q_sem_preco_v165 = 0
+    _q_sem_custo_v165 = 0
+    _q_sem_mercado_v165 = 0
+    _q_sem_volume_v165 = 0
+    _q_apto_margem_v165 = 0
+    _q_apto_potencial_v165 = 0
+    _confiabilidade_v165 = 0.0
+    _qualidade_flag_v165 = "🔴 Base insuficiente"
+    _indice_exibicao_v165 = str(_eirox_indice_v161)
+    _flag_exibicao_v165 = _eirox_flag_indice_v162
+
+    try:
+        _motor_q_v165 = eirox_motor_oportunidades(df_filtrado.copy())
+        if isinstance(_motor_q_v165, pd.DataFrame) and not _motor_q_v165.empty:
+            _c_ean_q_v165 = _eirox_first_col(
+                _motor_q_v165, ["EAN","EAN (GTIN)","GTIN","Código de Barras"]
+            )
+            _q_v165 = pd.DataFrame(index=_motor_q_v165.index)
+            _q_v165["EAN"] = (
+                _ean(_motor_q_v165[_c_ean_q_v165])
+                if _c_ean_q_v165 else
+                _motor_q_v165.index.astype(str)
+            )
+            _q_v165["preco"] = pd.to_numeric(
+                _motor_q_v165.get("Preço_Atual_Eirox", np.nan), errors="coerce"
+            )
+            _q_v165["custo"] = pd.to_numeric(
+                _motor_q_v165.get("Custo_Unitario_Eirox", np.nan), errors="coerce"
+            )
+            _q_v165["mercado"] = pd.to_numeric(
+                _motor_q_v165.get("Preço_Mercado_Eirox", np.nan), errors="coerce"
+            )
+
+            # Consolida um registro por EAN para a leitura executiva.
+            _q_v165 = _q_v165.drop_duplicates("EAN", keep="first").reset_index(drop=True)
+
+            _fechado_q_v165 = eirox_v158_ultimo_mes_fechado_memoria(
+                globals().get("venda_rede", pd.DataFrame())
+            )
+            if isinstance(_fechado_q_v165, pd.DataFrame) and not _fechado_q_v165.empty:
+                _fechado_q_v165 = _fechado_q_v165[[
+                    "EAN","Itens_Mes_Fechado","Mes_Fechado_Referencia"
+                ]].drop_duplicates("EAN", keep="last").copy()
+                _fechado_q_v165["EAN"] = _ean(_fechado_q_v165["EAN"])
+                _q_v165 = _q_v165.merge(_fechado_q_v165, on="EAN", how="left")
+            else:
+                _q_v165["Itens_Mes_Fechado"] = np.nan
+                _q_v165["Mes_Fechado_Referencia"] = ""
+
+            _vol_q_v165 = pd.to_numeric(
+                _q_v165["Itens_Mes_Fechado"], errors="coerce"
+            )
+
+            _ok_preco_v165 = _q_v165["preco"].notna() & _q_v165["preco"].gt(0)
+            _ok_custo_v165 = _q_v165["custo"].notna() & _q_v165["custo"].gt(0)
+            _ok_mercado_v165 = _q_v165["mercado"].notna() & _q_v165["mercado"].gt(0)
+            _ok_volume_v165 = _vol_q_v165.notna() & _vol_q_v165.gt(0)
+
+            _q_total_v165 = int(len(_q_v165))
+            _q_sem_preco_v165 = int((~_ok_preco_v165).sum())
+            _q_sem_custo_v165 = int((~_ok_custo_v165).sum())
+            _q_sem_mercado_v165 = int((~_ok_mercado_v165).sum())
+            _q_sem_volume_v165 = int((~_ok_volume_v165).sum())
+
+            _q_apto_margem_v165 = int((_ok_preco_v165 & _ok_custo_v165).sum())
+            _q_apto_potencial_v165 = int(
+                (_ok_preco_v165 & _ok_mercado_v165 & _ok_volume_v165).sum()
+            )
+            _q_completo_v165 = int(
+                (_ok_preco_v165 & _ok_custo_v165 & _ok_mercado_v165 & _ok_volume_v165).sum()
+            )
+
+            _confiabilidade_v165 = (
+                (_q_completo_v165 / _q_total_v165) * 100.0
+                if _q_total_v165 > 0 else 0.0
+            )
+
+            if _confiabilidade_v165 >= 90:
+                _qualidade_flag_v165 = "🟢 Base muito completa"
+            elif _confiabilidade_v165 >= 70:
+                _qualidade_flag_v165 = "🟡 Base parcialmente completa"
+            else:
+                _qualidade_flag_v165 = "🔴 Base com pendências relevantes"
+
+            # Abaixo de 60% de base completa, o número continua visível para auditoria,
+            # porém deixa claro que não deve ser interpretado como índice consolidado.
+            if _confiabilidade_v165 < 60:
+                _flag_exibicao_v165 = "⚪ ÍNDICE PROVISÓRIO — BASE INSUFICIENTE"
+    except Exception:
+        _qualidade_flag_v165 = "🔴 Não foi possível auditar a qualidade da base"
+        _flag_exibicao_v165 = "⚪ ÍNDICE PROVISÓRIO — QUALIDADE NÃO AUDITADA"
+
+    _margem_tem_dado_v165 = bool(
+        "Margem_%" in df_filtrado.columns
+        and pd.to_numeric(df_filtrado["Margem_%"], errors="coerce").notna().any()
+    )
+    _potencial_tem_dado_v165 = bool(
+        isinstance(globals().get("_sim_indice_v161", None), pd.DataFrame)
+        and not globals().get("_sim_indice_v161", pd.DataFrame()).empty
+    )
+
+    _txt_margem_v165 = (
+        f"{_eirox_margem_indice_v161:.2f}%".replace(".", ",")
+        if _margem_tem_dado_v165 else
+        "Dados insuficientes"
+    )
+    _txt_potencial_v165 = (
+        moeda_br(_eirox_potencial_indice_v161)
+        if _potencial_tem_dado_v165 else
+        "Sem oportunidade calculada"
+    )
+
     st.markdown(
         f"""
         <div style="
@@ -28888,14 +29004,17 @@ if _eirox_visao_dashboard_v160 == "🤖 Índice Eirox Calculado":
                     <div style="margin-top:8px;color:#91a8c2;font-size:13px;">
                         60% Rentabilidade Atual + 40% Potencial de Captura
                     </div>
+                    <div style="margin-top:10px;color:#cbd7e6;font-size:12px;">
+                        Qualidade dos dados: <b>{_qualidade_flag_v165}</b>
+                    </div>
                 </div>
                 <div style="text-align:right;">
-                    <div style="font-size:46px;font-weight:950;color:#d8c2ff;line-height:1;">{_eirox_indice_v161}</div>
+                    <div style="font-size:46px;font-weight:950;color:#d8c2ff;line-height:1;">{_indice_exibicao_v165}</div>
                     <div style="
                         display:inline-block;margin-top:10px;padding:6px 12px;border-radius:999px;
                         background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.10);
                         color:#f5f8ff;font-size:12px;font-weight:850;
-                    ">{_eirox_flag_indice_v162}</div>
+                    ">{_flag_exibicao_v165}</div>
                 </div>
             </div>
         </div>
@@ -28903,42 +29022,96 @@ if _eirox_visao_dashboard_v160 == "🤖 Índice Eirox Calculado":
         unsafe_allow_html=True
     )
 
-    c_ind1, c_ind2, c_ind3 = st.columns(3)
-    c_ind1.metric(
-        "Rentabilidade Atual",
-        f"{_eirox_margem_indice_v161:.2f}%".replace(".", ",")
+    c_ind1, c_ind2, c_ind3, c_ind4 = st.columns(4)
+    c_ind1.metric("Rentabilidade Atual", _txt_margem_v165)
+    c_ind2.metric("Potencial de Captura", _txt_potencial_v165)
+    c_ind3.metric("Índice Eirox", _eirox_indice_v161)
+    c_ind4.metric(
+        "Confiabilidade da Base",
+        f"{_confiabilidade_v165:.1f}%".replace(".", ",")
+        if _q_total_v165 > 0 else
+        "Não auditada"
     )
-    c_ind2.metric(
-        "Potencial de Captura",
-        moeda_br(_eirox_potencial_indice_v161)
+
+    st.markdown("### Cobertura dos dados")
+    c_cov1, c_cov2, c_cov3 = st.columns(3)
+    c_cov1.metric(
+        "Produtos aptos ao índice",
+        f"{_q_completo_v165:,} / {_q_total_v165:,}".replace(",", ".")
+        if _q_total_v165 > 0 else
+        "Sem base"
     )
-    c_ind3.metric(
-        "Índice Eirox",
-        _eirox_indice_v161
+    c_cov2.metric(
+        "Aptos à rentabilidade",
+        f"{_q_apto_margem_v165:,}".replace(",", ".")
     )
+    c_cov3.metric(
+        "Aptos ao potencial",
+        f"{_q_apto_potencial_v165:,}".replace(",", ".")
+    )
+
+    _pendencias_v165 = pd.DataFrame([
+        {"Pendência": "Sem preço atual válido", "Produtos": _q_sem_preco_v165},
+        {"Pendência": "Sem custo unitário válido", "Produtos": _q_sem_custo_v165},
+        {"Pendência": "Sem referência de mercado", "Produtos": _q_sem_mercado_v165},
+        {"Pendência": "Sem volume no último mês fechado", "Produtos": _q_sem_volume_v165},
+    ])
+    _pendencias_v165 = _pendencias_v165[_pendencias_v165["Produtos"].gt(0)].copy()
+
+    if _pendencias_v165.empty:
+        st.success("✅ Não foram encontradas pendências estruturais na base usada pelo índice.")
+    else:
+        st.warning(
+            "O índice foi calculado com os dados disponíveis. "
+            "As pendências abaixo explicam por que parte da base pode não participar do cálculo."
+        )
+        eirox_dataframe_brl(
+            _pendencias_v165,
+            use_container_width=True,
+            hide_index=True
+        )
 
     st.markdown("### Composição do Índice")
+    if _margem_tem_dado_v165:
+        st.markdown(
+            f"**Rentabilidade Atual × 60%**  \n"
+            f"{_eirox_margem_indice_v161:.2f} × 60% = "
+            f"**{(_eirox_margem_indice_v161 * 0.60):.2f}**"
+        )
+    else:
+        st.info(
+            "Rentabilidade Atual: não há margem válida suficiente para explicar esta parcela do índice."
+        )
+
+    if _potencial_tem_dado_v165:
+        st.markdown(
+            f"**Potencial de Captura ÷ 1.000 × 40%**  \n"
+            f"{moeda_br(_eirox_potencial_indice_v161)} ÷ 1.000 × 40% = "
+            f"**{((_eirox_potencial_indice_v161 / 1000.0) * 0.40):.2f}**"
+        )
+    else:
+        st.info(
+            "Potencial de Captura: não há oportunidade financeira válida calculada para esta base/filtro."
+        )
+
     st.markdown(
         f"""
-**Rentabilidade Atual × 60%**
-
-{_eirox_margem_indice_v161:.2f} × 60% = **{(_eirox_margem_indice_v161 * 0.60):.2f}**
-
-**Potencial de Captura ÷ 1.000 × 40%**
-
-{moeda_br(_eirox_potencial_indice_v161)} ÷ 1.000 × 40% = **{((_eirox_potencial_indice_v161 / 1000.0) * 0.40):.2f}**
-
 ### Resultado
 
 **Índice Eirox = {_eirox_indice_v161}**
 
-**Flag = {_eirox_flag_indice_v162}**
+**Flag do índice = {_flag_exibicao_v165}**
 
-Faixas de classificação:
+**Qualidade da base = {_qualidade_flag_v165} ({_confiabilidade_v165:.1f}%)**
+
+Faixas do Índice Eirox:
 
 - 🟢 **70 ou mais:** Índice Alto
 - 🟡 **40 a 69:** Índice Médio
 - 🔴 **Abaixo de 40:** Índice Baixo
+
+> Quando menos de 60% dos produtos possuem preço, custo, mercado e volume válidos,
+> o índice permanece visível para auditoria, mas é identificado como **provisório**.
         """
     )
     st.stop()
