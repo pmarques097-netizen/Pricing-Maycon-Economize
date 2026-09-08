@@ -9251,12 +9251,134 @@ def _v143_original_recalcular_ganho_inteligente(df_base, venda_rede_base, histor
 
 
 def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
-    resultado = _v143_original_recalcular_ganho_inteligente(
-        df_base, venda_rede_base, historico_base
+    """
+    V1.4.53 — simulador reconciliado com a fonte oficial do Pricing.
+
+    Preço Atual:
+      1) VENDA_TESTE, última ocorrência válida do Principal;
+      2) fallback VENDA_FINAL_TESTE, último mês fechado com venda do EAN.
+
+    Volume do simulador:
+      sempre Itens do último mês FECHADO com venda daquele EAN.
+
+    Ganho:
+      (Preço Sugerido - Preço Atual) x Itens do mês de referência.
+    """
+    if not isinstance(df_base, pd.DataFrame) or df_base.empty:
+        return df_base.copy() if isinstance(df_base, pd.DataFrame) else pd.DataFrame(), pd.DataFrame(), "sem_base"
+
+    df_calc = eirox_v143_aplicar_preco(df_base.copy())
+
+    # Motor central: mesma classificação e mesma referência de mercado das telas.
+    try:
+        motor = eirox_motor_oportunidades(df_calc)
+    except Exception:
+        motor = pd.DataFrame()
+
+    # Volume/faturamento: último mês fechado COM venda, por EAN.
+    fechado = eirox_v146_ultimo_mes_fechado()
+    if (
+        not isinstance(motor, pd.DataFrame) or motor.empty
+        or not isinstance(fechado, pd.DataFrame) or fechado.empty
+    ):
+        if "Ganho_Potencial" not in df_calc.columns:
+            df_calc["Ganho_Potencial"] = 0.0
+        return df_calc, pd.DataFrame(), "sem_base_mensal_fechada"
+
+    ce = _eirox_first_col(motor, ["EAN", "EAN (GTIN)", "GTIN"])
+    if not ce:
+        return df_calc, pd.DataFrame(), "sem_ean"
+
+    sim = motor.copy()
+    sim["EAN"] = _ean(sim[ce])
+    sim = sim.merge(
+        fechado[[
+            "EAN","Venda_Mes_Fechado","Itens_Mes_Fechado",
+            "Mes_Fechado_Referencia"
+        ]].drop_duplicates("EAN", keep="last"),
+        on="EAN",
+        how="inner"
     )
-    if isinstance(resultado, tuple) and resultado and isinstance(resultado[0], pd.DataFrame):
-        return (eirox_v143_aplicar_preco(resultado[0]), *resultado[1:])
-    return resultado
+
+    if sim.empty:
+        return df_calc, pd.DataFrame(), "sem_oportunidade_valida"
+
+    # Somente oportunidades reais de aumento, usando o preço exibido.
+    p = pd.to_numeric(sim["Preço_Atual_Eirox"], errors="coerce")
+    s = pd.to_numeric(sim["Preço_Sugerido_Eirox"], errors="coerce")
+    q = pd.to_numeric(sim["Itens_Mes_Fechado"], errors="coerce")
+    venda = pd.to_numeric(sim["Venda_Mes_Fechado"], errors="coerce")
+
+    mask = (
+        sim["Recomendacao_Central"].astype(str).eq("SUBIR PREÇO")
+        & p.gt(0) & s.gt(p) & q.gt(0) & venda.gt(0)
+    )
+    sim = sim.loc[mask].copy()
+    if sim.empty:
+        return df_calc, pd.DataFrame(), "sem_oportunidade_valida"
+
+    p = pd.to_numeric(sim["Preço_Atual_Eirox"], errors="coerce")
+    s = pd.to_numeric(sim["Preço_Sugerido_Eirox"], errors="coerce")
+    q = pd.to_numeric(sim["Itens_Mes_Fechado"], errors="coerce")
+
+    # Para manter a auditoria com o Preço Atual, a venda antiga é preço atual x volume.
+    # O faturamento real do mês permanece em coluna separada.
+    sim["Qtd_Vendida_Mes_Anterior"] = q
+    sim["Preco_Atual"] = p
+    sim["Preco_Sugerido_Mercado"] = s
+    sim["Venda_Real_Mes_Fechado"] = pd.to_numeric(sim["Venda_Mes_Fechado"], errors="coerce")
+    sim["Venda_Preco_Antigo"] = (p * q).round(2)
+    sim["Venda_Projetada_Preco_Sugerido"] = (s * q).round(2)
+    sim["Ganho_Unitario"] = (s - p).round(2)
+    sim["Ganho_Potencial_Simulador"] = (sim["Ganho_Unitario"] * q).round(2)
+
+    # Produto e metadados competitivos vêm do mesmo motor.
+    cprod = _eirox_first_col(sim, ["Produto","Descrição","Descricao","Produto na Pesquisa"])
+    if cprod:
+        sim["Produto_Simulador"] = sim[cprod].astype(str)
+    if "Menor Preço Concorrente" in sim.columns:
+        sim["Menor_Preco"] = pd.to_numeric(sim["Menor Preço Concorrente"], errors="coerce")
+    if "Loja do Menor Preço" in sim.columns:
+        sim["Loja_Menor_Preco"] = sim["Loja do Menor Preço"]
+    if "Data da Pesquisa" in sim.columns:
+        sim["Data_Menor_Preco"] = sim["Data da Pesquisa"]
+
+    # Compatibilidade com a tabela já existente do simulador.
+    if "Preço_Mercado_Eirox" in sim.columns:
+        sim["Preco_Maximo_Competitivo"] = pd.to_numeric(sim["Preço_Mercado_Eirox"], errors="coerce")
+    if "Loja do Menor Preço" in sim.columns and "Rede_Preco_Maximo_Competitivo" not in sim.columns:
+        sim["Rede_Preco_Maximo_Competitivo"] = sim["Loja do Menor Preço"]
+    if "Data da Pesquisa" in sim.columns and "Data_Preco_Maximo_Competitivo" not in sim.columns:
+        sim["Data_Preco_Maximo_Competitivo"] = sim["Data da Pesquisa"]
+
+    # Atualiza Ganho_Potencial somente para EANs reconciliados.
+    ganho = sim.groupby("EAN", as_index=False)["Ganho_Potencial_Simulador"].sum()
+    ganho = ganho.rename(columns={"Ganho_Potencial_Simulador":"Ganho_Potencial_Reconciliado"})
+    base_out = df_calc.copy()
+    if "EAN" in base_out.columns:
+        base_out["EAN"] = _ean(base_out["EAN"])
+        base_out = base_out.merge(ganho, on="EAN", how="left")
+        base_out["Ganho_Potencial"] = pd.to_numeric(
+            base_out["Ganho_Potencial_Reconciliado"], errors="coerce"
+        ).fillna(0)
+        base_out["Ganho_Potencial_Atualizado"] = base_out["Ganho_Potencial"]
+        base_out["Ganho_Potencial_Final"] = base_out["Ganho_Potencial"]
+
+    manter = [
+        "EAN","Produto_Simulador","Qtd_Vendida_Mes_Anterior",
+        "Venda_Real_Mes_Fechado","Venda_Preco_Antigo",
+        "Preco_Atual","Preco_Sugerido_Mercado",
+        "Venda_Projetada_Preco_Sugerido","Ganho_Unitario",
+        "Ganho_Potencial_Simulador","Mes_Fechado_Referencia",
+        "Menor_Preco","Rede_Menor_Preco","Loja_Menor_Preco","Data_Menor_Preco",
+        "Rede_Preco_Maximo_Competitivo","Loja_Preco_Maximo_Competitivo",
+        "Data_Preco_Maximo_Competitivo"
+    ]
+    manter = [c for c in manter if c in sim.columns]
+    sim = sim[manter].copy()
+
+    return base_out, sim.reset_index(drop=True), "ultimo_mes_fechado_reconciliado"
+
 
 
 
@@ -16219,7 +16341,8 @@ df, simulacao_global, origem_simulacao_global = eirox_recalcular_ganho_cacheado(
     historico,
 )
 
-# Ganho potencial único para todas as visões e indicadores.
+# V1.4.53 — o Ganho_Potencial já sai reconciliado do motor com o último
+# mês fechado por EAN. Apenas cria aliases, sem restaurar valores históricos.
 df = propagar_ganho_potencial(df)
 
 if isinstance(simulacao_global, pd.DataFrame) and not simulacao_global.empty:
@@ -31464,7 +31587,7 @@ if (
 # --------------------------------------------------
 
 st.subheader(
-    "💵 Simulador de Ganho com Ajuste de Preço"
+    "💵 Simulador de Ganho — Último Mês Fechado por EAN"
 )
 
 if not simulacao_global.empty:
@@ -31483,27 +31606,44 @@ if not simulacao_global.empty:
         ascending=False
     )
 
-    k1, k2, k3, k4 = st.columns(4)
+    # V1.4.53 — cards reconciliados e auditáveis.
+    k1, k2, k3, k4, k5 = st.columns(5)
 
     k1.metric(
         "Produtos com Oportunidade",
-        len(simulacao)
+        f"{len(simulacao):,}".replace(",", ".")
     )
 
     k2.metric(
-        "Venda Preço Antigo",
-        moeda_br(simulacao["Venda_Preco_Antigo"].sum())
+        "Venda Real Último Mês",
+        moeda_br(simulacao["Venda_Real_Mes_Fechado"].sum())
+        if "Venda_Real_Mes_Fechado" in simulacao.columns else "—"
     )
 
     k3.metric(
+        "Venda ao Preço Atual",
+        moeda_br(simulacao["Venda_Preco_Antigo"].sum())
+    )
+
+    k4.metric(
         "Venda com Preço Sugerido",
         moeda_br(simulacao["Venda_Projetada_Preco_Sugerido"].sum())
     )
 
-    k4.metric(
-        "Ganho Total",
+    k5.metric(
+        "Ganho Potencial",
         moeda_br(simulacao["Ganho_Potencial_Simulador"].sum())
     )
+
+    if "Mes_Fechado_Referencia" in simulacao.columns:
+        _meses_sim_v153 = sorted(
+            simulacao["Mes_Fechado_Referencia"].dropna().astype(str).unique().tolist()
+        )
+        if _meses_sim_v153:
+            st.caption(
+                "Volume do simulador: último mês fechado com venda de cada EAN. "
+                "Competências utilizadas: " + ", ".join(_meses_sim_v153)
+            )
 
     # Garante que a tela mostre somente o nome comercial da rede.
     # Se a coluna Rede vier vazia, identifica a rede pela razão social/loja,
@@ -31532,7 +31672,9 @@ if not simulacao_global.empty:
         colunas_exibir.append("Produto")
 
     colunas_exibir += [
+        "Mes_Fechado_Referencia",
         "Qtd_Vendida_Mes_Anterior",
+        "Venda_Real_Mes_Fechado",
         "Venda_Preco_Antigo",
         "Preco_Atual",
         "Preco_Sugerido_Mercado",
@@ -31576,6 +31718,7 @@ if not simulacao_global.empty:
         pass
 
     for coluna in [
+        "Venda_Real_Mes_Fechado",
         "Venda_Preco_Antigo",
         "Preco_Atual",
         "Preco_Sugerido_Mercado",
@@ -31599,8 +31742,10 @@ if not simulacao_global.empty:
             simulacao_exibir[coluna_data] = simulacao_exibir[coluna_data].apply(data_br)
 
     simulacao_exibir = simulacao_exibir.rename(columns={
-        "Qtd_Vendida_Mes_Anterior": "Qtd Vendida Mês Anterior",
-        "Venda_Preco_Antigo": "Venda Preço Antigo",
+        "Mes_Fechado_Referencia": "Mês Ref. Venda",
+        "Qtd_Vendida_Mes_Anterior": "Qtd Último Mês Fechado",
+        "Venda_Real_Mes_Fechado": "Venda Real Último Mês",
+        "Venda_Preco_Antigo": "Venda ao Preço Atual",
         "Preco_Atual": "Preço Atual",
         "Preco_Sugerido_Mercado": "Preço Máximo Competitivo",
         "Rede_Preco_Maximo_Competitivo": "Rede Preço Máximo Competitivo",
@@ -31617,73 +31762,41 @@ if not simulacao_global.empty:
         simulacao_exibir,
     )
 
-    # Gráfico oficial do Dashboard: usa apenas Analise_Pricing.xlsx
-    base_ganho_oficial = preparar_ganho_oficial_dashboard(
-        df_filtrado
-    )
-
-    eixo_produto_grafico = (
-        "Produto"
-        if "Produto" in base_ganho_oficial.columns
-        else "EAN"
-    )
-
-    top_ganho_grafico = (
-        base_ganho_oficial
-        .sort_values(
-            "Ganho_Potencial",
-            ascending=True
-        )
+    # V1.4.53 — gráfico usa exatamente o mesmo ganho reconciliado dos cards/tabela.
+    _top_sim_v153 = (
+        simulacao.sort_values("Ganho_Potencial_Simulador", ascending=True)
         .tail(20)
         .copy()
     )
-
-    top_ganho_grafico["Ganho_Label"] = (
-        top_ganho_grafico["Ganho_Potencial"]
-        .apply(moeda_br)
-    )
+    _eixo_prod_v153 = "Produto" if "Produto" in _top_sim_v153.columns else "EAN"
+    _top_sim_v153["Ganho_Label"] = _top_sim_v153["Ganho_Potencial_Simulador"].apply(moeda_br)
 
     fig = px.bar(
-        top_ganho_grafico,
-        x="Ganho_Potencial",
-        y=eixo_produto_grafico,
+        _top_sim_v153,
+        x="Ganho_Potencial_Simulador",
+        y=_eixo_prod_v153,
         orientation="h",
         text="Ganho_Label",
-        title="Top 20 Produtos com Maior Ganho Projetado",
+        title="Top 20 Produtos com Maior Ganho Potencial Reconciliado",
         labels={
-            "Ganho_Potencial": "Ganho Projetado",
-            eixo_produto_grafico: "Produto"
+            "Ganho_Potencial_Simulador": "Ganho Potencial",
+            _eixo_prod_v153: "Produto"
         }
     )
-
     fig.update_traces(
         textposition="outside",
-        cliponaxis=False
+        cliponaxis=False,
+        customdata=_top_sim_v153[["Ganho_Label"]].to_numpy(),
+        hovertemplate="%{y}<br>Ganho: %{customdata[0]}<extra></extra>"
     )
-
     fig.update_layout(
         height=650,
-        margin=dict(
-            l=20,
-            r=180,
-            t=60,
-            b=40
-        ),
+        margin=dict(l=20,r=180,t=60,b=40),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(
-            tickformat=",",
-            showgrid=True
-        ),
-        yaxis=dict(
-            automargin=True
-        )
+        yaxis=dict(automargin=True)
     )
-
-    st.plotly_chart(
-        fig,
-        key="dashboard_ganho_oficial"
-    )
+    st.plotly_chart(fig, key="dashboard_ganho_reconciliado")
 
 else:
 
