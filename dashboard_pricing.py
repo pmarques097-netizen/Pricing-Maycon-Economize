@@ -7,6 +7,34 @@ import re
 import zipfile
 import shutil
 import pandas as pd
+
+# V1.4.43 — fonte única do Principal: VENDA_TESTE, última Data Emissão.
+from pricing_ultima_pesquisa import read_folder as _v143_read_folder
+from pricing_ultima_pesquisa import apply_latest as _v143_apply_latest
+from pricing_ultima_pesquisa import _ean as _v143_ean
+from functools import lru_cache as _v143_lru_cache
+
+@_v143_lru_cache(maxsize=12)
+def _v143_cached_latest(signature, cnpjs):
+    return _v143_read_folder(Path(__file__).resolve().parent / "VENDA_TESTE", cnpjs)
+
+def eirox_v143_ultima_pesquisa():
+    pasta = Path(__file__).resolve().parent / "VENDA_TESTE"
+    assinatura = tuple(sorted(
+        (p.name, p.stat().st_size, p.stat().st_mtime_ns)
+        for p in list(pasta.glob("*.xlsx")) + list(pasta.glob("*.xls"))
+        if not p.name.startswith("~$")
+    ))
+    # A mesma base pode servir a vários clientes. Nunca compartilhar o mapa
+    # entre CNPJs distintos nem usar o nome da rede para inferir propriedade.
+    cnpjs = tuple(sorted(set(
+        re.sub(r"\D", "", str(x)) for x in eirox_cnpjs_cliente_global()
+    )))
+    return _v143_cached_latest(assinatura, cnpjs).copy()
+
+def eirox_v143_aplicar_preco(base):
+    return _v143_apply_latest(base, eirox_v143_ultima_pesquisa())
+
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
@@ -994,7 +1022,7 @@ def eirox_ultima_venda_por_ean(venda, ean_col, qtd_col=None, preco_col=None, val
     }).reset_index(drop=True)
 
 
-def construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque):
+def _v143_original_construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque):
     try:
         h = historico.copy() if isinstance(historico, pd.DataFrame) else pd.DataFrame()
         c = compra.copy() if isinstance(compra, pd.DataFrame) else pd.DataFrame()
@@ -1163,6 +1191,12 @@ def construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque
         except Exception:
             pass
         return pd.DataFrame()
+
+
+def construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque):
+    d = _v143_original_construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque)
+    return eirox_v143_aplicar_preco(d)
+
 
 
 
@@ -8526,7 +8560,7 @@ def preco_referencia_seguro(valores):
     return float(s.quantile(0.75))
 
 
-def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
+def _v143_original_recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
 
     if (
         not isinstance(df_base, pd.DataFrame)
@@ -8849,6 +8883,15 @@ def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
     ].max(axis=1)
 
     return df_calc, simulacao, "venda_rede_historico_inteligente"
+
+
+def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
+    resultado = _v143_original_recalcular_ganho_inteligente(
+        df_base, venda_rede_base, historico_base)
+    if isinstance(resultado, tuple) and resultado and isinstance(resultado[0], pd.DataFrame):
+        return (eirox_v143_aplicar_preco(resultado[0]), *resultado[1:])
+    return resultado
+
 
 
 
@@ -17880,7 +17923,7 @@ def eirox_qd_sanitizar(base):
     return d
 
 
-def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
+def _v143_original_eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
     if not isinstance(base, pd.DataFrame) or base.empty:
         return pd.DataFrame()
 
@@ -18018,6 +18061,13 @@ def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
     ] = 0.0
 
     return d
+
+
+def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
+    # A fonte é resolvida antes da classificação; não há preço inventado.
+    d = eirox_v143_aplicar_preco(base)
+    return _v143_original_eirox_motor_oportunidades(d, margem_minima=margem_minima)
+
 
 def eirox_resumo_oportunidades(base):
     d = eirox_motor_oportunidades(base)
@@ -19300,12 +19350,6 @@ def eirox_v147_corrigir_lista_subir_final(tab):
         if (pd.isna(ps) or ps <= 0) and pd.notna(pm) and pm > 0:
             ps = pm
             out.at[idx, "Preço Sugerido"] = _eirox_moeda_num(ps)
-
-        # Relação exata já usada pelo próprio relatório: aumento = sugerido - atual.
-        if (pd.isna(pa) or pa <= 0) and pd.notna(ps) and pd.notna(au) and ps > au >= 0:
-            pa = ps - au
-            if pa > 0:
-                out.at[idx, "Preço Atual"] = _eirox_moeda_num(pa)
 
         # Menor preço/loja/data atômicos da VENDA_TESTE, todos da mesma linha.
         ean = ""
