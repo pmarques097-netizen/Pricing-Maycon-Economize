@@ -4107,11 +4107,22 @@ def eirox_montar_cliente_x_concorrente(base_preparada, rede_concorrente):
         if principal.empty or concorr.empty:
             return pd.DataFrame()
 
-        # Menor preço válido de cada rede, considerando somente o preço
-        # mais recente de cada farmácia (já tratado no preparo).
-        idx_cli = principal.groupby("EAN_CMP")["PRECO_CMP"].idxmin()
-        cli = principal.loc[idx_cli].copy()
+        # REGRA GLOBAL V1.4.37: para o Principal, usa a última venda/pesquisa
+        # por EAN conforme a Data da Pesquisa. Não usa menor preço nem média.
+        principal["_ORDEM_PRINC_CMP"] = range(len(principal))
+        principal["_DATA_PRINC_CMP"] = pd.to_datetime(principal["DATA_CMP"], errors="coerce")
+        principal["_DATA_ORD_PRINC_CMP"] = principal["_DATA_PRINC_CMP"].fillna(pd.Timestamp.min)
+        cli = (
+            principal.sort_values(
+                ["EAN_CMP", "_DATA_ORD_PRINC_CMP", "_ORDEM_PRINC_CMP"],
+                ascending=[True, True, True]
+            )
+            .groupby("EAN_CMP", as_index=False, dropna=False)
+            .tail(1)
+            .copy()
+        )
 
+        # Concorrente mantém a regra de menor preço válido.
         idx_con = concorr.groupby("EAN_CMP")["PRECO_CMP"].idxmin()
         con = concorr.loc[idx_con].copy()
 
@@ -5116,6 +5127,70 @@ def eirox_forcar_nome_cliente_em_rede_principal(base):
         return base
 
 
+
+def eirox_ultimo_preco_principal_por_ean(base, preco_col="Preço (R$)"):
+    """
+    Regra global V1.4.37:
+    para o Principal, o preço de referência por EAN é SEMPRE o preço da
+    ocorrência mais recente conforme a Data da Pesquisa. Não usa média nem
+    menor preço histórico do Principal.
+
+    Em empate de data, preserva a última ocorrência física da base.
+    Se não houver coluna/data válida, usa a última ocorrência física por EAN.
+    """
+    try:
+        if not isinstance(base, pd.DataFrame) or base.empty:
+            return pd.DataFrame()
+
+        b = base.copy()
+        if "EAN" not in b.columns and "EAN (GTIN)" in b.columns:
+            b["EAN"] = b["EAN (GTIN)"]
+        if "EAN" not in b.columns or preco_col not in b.columns:
+            return pd.DataFrame()
+
+        b["EAN"] = (
+            b["EAN"].astype(str)
+            .str.replace(".0", "", regex=False)
+            .str.replace(r"\D", "", regex=True)
+            .str.strip()
+        )
+        b[preco_col] = pd.to_numeric(b[preco_col], errors="coerce")
+        b = b[b["EAN"].ne("") & b[preco_col].notna() & b[preco_col].gt(0)].copy()
+        if b.empty:
+            return b
+
+        data_col = None
+        for c in [
+            "Data Emissão", "Data Emissao", "Data da Pesquisa", "Data Pesquisa",
+            "Data_Pesquisa", "Dt Pesquisa", "Data", "Data_Hora", "Data Hora"
+        ]:
+            if c in b.columns:
+                data_col = c
+                break
+
+        b["_ORDEM_PRINCIPAL"] = range(len(b))
+        if data_col:
+            b["_DATA_PRINCIPAL"] = pd.to_datetime(
+                b[data_col], errors="coerce", dayfirst=True
+            )
+        else:
+            b["_DATA_PRINCIPAL"] = pd.NaT
+
+        # Data mais recente vence. Quando ausente/empatada, vence a última linha.
+        b["_DATA_ORD_PRINCIPAL"] = b["_DATA_PRINCIPAL"].fillna(pd.Timestamp.min)
+        b = (
+            b.sort_values(
+                ["EAN", "_DATA_ORD_PRINCIPAL", "_ORDEM_PRINCIPAL"],
+                ascending=[True, True, True]
+            )
+            .groupby("EAN", as_index=False, dropna=False)
+            .tail(1)
+            .copy()
+        )
+        return b
+    except Exception:
+        return pd.DataFrame()
+
 def eirox_base_principal_concorrente_global(df_base):
     """
     Retorna base total, base principal e base concorrente usando sempre o cliente em contexto.
@@ -5251,10 +5326,21 @@ def eirox_preferir_base_cliente_se_tiver_mais_produtos(preco_selecionado_atual, 
 
         nova_qtd = int(base_cliente["EAN"].nunique()) if "EAN" in base_cliente.columns else len(base_cliente)
 
-        if nova_qtd > atual_qtd:
+        # A base interna é somente fallback para EAN sem pesquisa do Principal.
+        # Nunca substitui o preço pesquisado mais recente de um EAN já encontrado.
+        if not isinstance(preco_selecionado_atual, pd.DataFrame) or preco_selecionado_atual.empty:
             return base_cliente
+        if not isinstance(base_cliente, pd.DataFrame) or base_cliente.empty:
+            return preco_selecionado_atual
 
-        return preco_selecionado_atual
+        atual = preco_selecionado_atual.copy()
+        interno = base_cliente.copy()
+        eans_atual = set(atual["EAN"].astype(str)) if "EAN" in atual.columns else set()
+        if "EAN" in interno.columns:
+            interno = interno[~interno["EAN"].astype(str).isin(eans_atual)].copy()
+        if interno.empty:
+            return atual
+        return pd.concat([atual, interno], ignore_index=True, sort=False)
 
     except Exception:
         return preco_selecionado_atual
@@ -25440,24 +25526,22 @@ if pagina == "🔎 Rede/Loja vs Concorrentes":
 
         if not base_principal_visual.empty:
 
-            preco_selecionado = (
-                base_principal_visual
-                .dropna(
-                    subset=[
-                        "EAN",
-                        "Preço (R$)"
-                    ]
+            _principal_ultimo = eirox_ultimo_preco_principal_por_ean(base_principal_visual)
+            if not _principal_ultimo.empty:
+                _qtd_principal = (
+                    base_principal_visual.dropna(subset=["EAN", "Preço (R$)"])
+                    .groupby("EAN")["Preço (R$)"].count().to_dict()
                 )
-                .groupby("EAN")
-                .agg(
-                    Produto_Pesquisa=("Produto", "first"),
-                    Preco_Selecionado=("Preço (R$)", "mean"),
-                    Qtd_Pesquisas_Selecionado=("Preço (R$)", "count"),
-                    Farmacia_Selecionada=("Farmácia", "first"),
-                    Rede_Selecionada=("Rede", "first")
-                )
-                .reset_index()
-            )
+                preco_selecionado = pd.DataFrame({
+                    "EAN": _principal_ultimo["EAN"],
+                    "Produto_Pesquisa": _principal_ultimo["Produto"] if "Produto" in _principal_ultimo.columns else "",
+                    "Preco_Selecionado": pd.to_numeric(_principal_ultimo["Preço (R$)"], errors="coerce"),
+                    "Qtd_Pesquisas_Selecionado": _principal_ultimo["EAN"].map(_qtd_principal).fillna(1),
+                    "Farmacia_Selecionada": _principal_ultimo["Farmácia"] if "Farmácia" in _principal_ultimo.columns else "",
+                    "Rede_Selecionada": _principal_ultimo["Rede"] if "Rede" in _principal_ultimo.columns else "",
+                })
+            else:
+                preco_selecionado = pd.DataFrame()
 
             # Para o cliente principal, usa a base interna de produtos/preço atual
             # quando ela possuir mais produtos do que as pesquisas do próprio CNPJ.
@@ -26007,24 +26091,19 @@ if pagina == "🛒 Negociação Compras":
             # PREÇO PRINCIPAL
             # --------------------------------------------------
 
-            preco_principal = (
-                base_principal
-                .dropna(
-                    subset=[
-                        "EAN",
-                        "Preço (R$)"
-                    ]
-                )
-                .groupby("EAN")
-                .agg(
-                    Produto_Pesquisa=("Produto", "first"),
-                    Preco_Principal=("Preço (R$)", "mean"),
-                    Qtd_Pesquisas_Principal=("Preço (R$)", "count"),
-                    Farmacia_Principal=("Farmácia", "first"),
-                    Rede_Principal=("Rede", "first")
-                )
-                .reset_index()
+            _principal_ultimo = eirox_ultimo_preco_principal_por_ean(base_principal)
+            _qtd_principal = (
+                base_principal.dropna(subset=["EAN", "Preço (R$)"])
+                .groupby("EAN")["Preço (R$)"].count().to_dict()
             )
+            preco_principal = pd.DataFrame({
+                "EAN": _principal_ultimo["EAN"],
+                "Produto_Pesquisa": _principal_ultimo["Produto"] if "Produto" in _principal_ultimo.columns else "",
+                "Preco_Principal": pd.to_numeric(_principal_ultimo["Preço (R$)"], errors="coerce"),
+                "Qtd_Pesquisas_Principal": _principal_ultimo["EAN"].map(_qtd_principal).fillna(1),
+                "Farmacia_Principal": _principal_ultimo["Farmácia"] if "Farmácia" in _principal_ultimo.columns else "",
+                "Rede_Principal": _principal_ultimo["Rede"] if "Rede" in _principal_ultimo.columns else "",
+            }) if not _principal_ultimo.empty else pd.DataFrame()
 
             # --------------------------------------------------
             # MENOR PREÇO CONCORRENTE
@@ -26738,24 +26817,19 @@ if pagina == "🚨 Central de Alertas":
             and "EAN" in base_concorrente_alerta.columns
         ):
 
-            principal = (
-                base_principal_alerta
-                .dropna(
-                    subset=[
-                        "EAN",
-                        "Preço (R$)"
-                    ]
-                )
-                .groupby("EAN")
-                .agg(
-                    Produto_Pesquisa=("Produto", "first"),
-                    Preco_Principal=("Preço (R$)", "mean"),
-                    Qtd_Pesquisas_Principal=("Preço (R$)", "count"),
-                    Farmacia_Principal=("Farmácia", "first"),
-                    Rede_Principal=("Rede", "first")
-                )
-                .reset_index()
+            _principal_ultimo_alerta = eirox_ultimo_preco_principal_por_ean(base_principal_alerta)
+            _qtd_principal_alerta = (
+                base_principal_alerta.dropna(subset=["EAN", "Preço (R$)"])
+                .groupby("EAN")["Preço (R$)"].count().to_dict()
             )
+            principal = pd.DataFrame({
+                "EAN": _principal_ultimo_alerta["EAN"],
+                "Produto_Pesquisa": _principal_ultimo_alerta["Produto"] if "Produto" in _principal_ultimo_alerta.columns else "",
+                "Preco_Principal": pd.to_numeric(_principal_ultimo_alerta["Preço (R$)"], errors="coerce"),
+                "Qtd_Pesquisas_Principal": _principal_ultimo_alerta["EAN"].map(_qtd_principal_alerta).fillna(1),
+                "Farmacia_Principal": _principal_ultimo_alerta["Farmácia"] if "Farmácia" in _principal_ultimo_alerta.columns else "",
+                "Rede_Principal": _principal_ultimo_alerta["Rede"] if "Rede" in _principal_ultimo_alerta.columns else "",
+            }) if not _principal_ultimo_alerta.empty else pd.DataFrame()
 
             concorrentes_validos = (
                 base_concorrente_alerta
