@@ -2620,49 +2620,91 @@ def eirox_txt(v, padrao="Não informado"):
 
 def eirox_mapa_auxiliar_produto(compra_base=None, estoque_base=None):
     """
-    Monta mapa por EAN com Laboratório, Família, CURVA e Custo.
-    Usa COMPRA_TESTE e ESTOQUE_TESTE mesmo quando o cabeçalho veio deslocado.
+    V1.4.66 — mapa auxiliar somente cadastral.
+
+    Laboratório, Família e CURVA podem vir de COMPRA_TESTE/ESTOQUE_TESTE.
+    Custo NÃO é preenchido aqui: a única fonte de custo do Pricing é
+    aplicar_custo_oficial_estoque_teste().
     """
     try:
         fontes = []
         for base in [compra_base, estoque_base]:
             if isinstance(base, pd.DataFrame) and not base.empty:
                 aux = eirox_normalizar_colunas_planilha(base.copy())
-                col_ean = eirox_coluna(aux, ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras", "codigobarras", "Cod Barras", "Barras"])
+                col_ean = eirox_coluna(
+                    aux,
+                    ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras",
+                     "Codigo de Barras", "codigobarras", "Cod Barras", "Barras"]
+                )
                 if not col_ean:
                     continue
 
-                col_lab = eirox_coluna(aux, ["Laboratório", "Laboratorio", "LABORATORIO", "Fabricante", "FABRICANTE", "Marca", "MARCA"])
-                col_fam = eirox_coluna(aux, ["Família", "Familia", "FAMILIA", "Classificação", "Classificacao", "Categoria", "Grupo", "Departamento", "Classe"])
-                col_curva = eirox_coluna(aux, ["CURVA", "Curva", "Curva ABC", "ABC"])
-                col_custo = eirox_coluna(aux, ["Custo", "Custo Unitário", "Custo_Unitario", "Preço Compra", "Preco Compra", "Custo Medio", "Custo Médio"])
+                col_lab = eirox_coluna(
+                    aux,
+                    ["Laboratório", "Laboratorio", "LABORATORIO",
+                     "Fabricante", "FABRICANTE", "Marca", "MARCA"]
+                )
+                col_fam = eirox_coluna(
+                    aux,
+                    ["Família", "Familia", "FAMILIA", "Classificação",
+                     "Classificacao", "Categoria", "Grupo", "Departamento", "Classe"]
+                )
+                col_curva = eirox_coluna(
+                    aux, ["CURVA", "Curva", "Curva ABC", "ABC"]
+                )
 
                 tmp = pd.DataFrame()
                 tmp["EAN_JOIN"] = aux[col_ean].apply(eirox_norm_ean)
-                if col_lab: tmp["Laboratório_aux"] = aux[col_lab].apply(lambda x: eirox_txt(x, ""))
-                if col_fam: tmp["Família_aux"] = aux[col_fam].apply(lambda x: eirox_txt(x, ""))
-                if col_curva: tmp["CURVA_aux"] = aux[col_curva].apply(lambda x: eirox_txt(x, ""))
-                if col_custo: tmp["Custo_aux"] = pd.to_numeric(aux[col_custo].astype(str).str.replace(".", "", regex=False).str.replace(",", ".", regex=False), errors="coerce")
+                if col_lab:
+                    tmp["Laboratório_aux"] = aux[col_lab].apply(
+                        lambda x: eirox_txt(x, "")
+                    )
+                if col_fam:
+                    tmp["Família_aux"] = aux[col_fam].apply(
+                        lambda x: eirox_txt(x, "")
+                    )
+                if col_curva:
+                    tmp["CURVA_aux"] = aux[col_curva].apply(
+                        lambda x: eirox_txt(x, "")
+                    )
 
                 tmp = tmp[tmp["EAN_JOIN"].astype(str).str.len() > 0].copy()
                 if not tmp.empty:
                     fontes.append(tmp)
 
         if not fontes:
-            return pd.DataFrame(columns=["EAN_JOIN", "Laboratório_aux", "Família_aux", "CURVA_aux", "Custo_aux"])
+            return pd.DataFrame(
+                columns=["EAN_JOIN", "Laboratório_aux", "Família_aux", "CURVA_aux"]
+            )
 
         full = pd.concat(fontes, ignore_index=True, sort=False)
 
         agg = {}
         for c in ["Laboratório_aux", "Família_aux", "CURVA_aux"]:
             if c in full.columns:
-                agg[c] = lambda x: next((str(v).strip() for v in x if str(v).strip() and str(v).strip().lower() not in ["nan", "none", "null", "não informado", "nao informado"]), "")
-        if "Custo_aux" in full.columns:
-            agg["Custo_aux"] = "mean"
+                agg[c] = lambda x: next(
+                    (
+                        str(v).strip()
+                        for v in x
+                        if str(v).strip()
+                        and str(v).strip().lower()
+                        not in ["nan", "none", "null", "não informado", "nao informado"]
+                    ),
+                    ""
+                )
+
+        if not agg:
+            return pd.DataFrame(
+                columns=["EAN_JOIN", "Laboratório_aux", "Família_aux", "CURVA_aux"]
+            )
 
         return full.groupby("EAN_JOIN", as_index=False).agg(agg)
+
     except Exception:
-        return pd.DataFrame(columns=["EAN_JOIN", "Laboratório_aux", "Família_aux", "CURVA_aux", "Custo_aux"])
+        return pd.DataFrame(
+            columns=["EAN_JOIN", "Laboratório_aux", "Família_aux", "CURVA_aux"]
+        )
+
 
 
 def corrigir_pipeline_lab_familia_recomendacoes(df_base, compra_base=None, estoque_base=None):
@@ -2711,9 +2753,8 @@ def corrigir_pipeline_lab_familia_recomendacoes(df_base, compra_base=None, estoq
                 novo = df["CURVA_aux"].apply(lambda x: eirox_txt(x, ""))
                 df["CURVA"] = np.where(atual.eq(""), novo, atual)
 
-            if "Custo_aux" in df.columns:
-                custo_atual = pd.to_numeric(df["Custo"], errors="coerce")
-                df["Custo"] = custo_atual.fillna(df["Custo_aux"])
+            # V1.4.66: custo não recebe fallback cadastral/compra.
+            # A fonte única é ESTOQUE_TESTE por Custo Médio / Estoque.
 
         # Fallback por descrição para família quando ainda faltar.
         if "Produto" in df.columns:
@@ -3134,94 +3175,255 @@ def eirox_numero_br_para_float(v):
 
 def mapa_custo_unitario_estoque_teste(estoque_base):
     """
-    Custo oficial:
-    Custo Unitário = coluna 'Custo Médio' / coluna 'Estoque'
-    agrupado por EAN.
+    V1.4.66 — mapa oficial e auditável de custo por EAN.
+
+    Fonte única:
+        Custo Unitário Oficial = soma(Custo Médio) / soma(Estoque)
+
+    O mapa mantém também EANs sem custo calculável para explicar o motivo:
+    EAN não encontrado, estoque zerado/negativo ou custo médio ausente.
     """
+    colunas_saida = [
+        "EAN_JOIN_CUSTO",
+        "Custo_Estoque_Unitario",
+        "Custo_Medio_Total_Base",
+        "Estoque_Total_Base",
+        "Fonte_Custo_Oficial",
+        "Motivo_Sem_Custo",
+    ]
     try:
         if not isinstance(estoque_base, pd.DataFrame) or estoque_base.empty:
-            return pd.DataFrame(columns=["EAN_JOIN_CUSTO", "Custo_Estoque_Unitario"])
+            return pd.DataFrame(columns=colunas_saida)
 
         est = estoque_base.copy()
 
-        col_ean = eirox_coluna_generica(est, ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras", "codigobarras", "Barras"])
-        col_custo_medio = eirox_coluna_generica(est, ["Custo Médio", "Custo Medio", "Custo_Medio", "Custo Médio Total", "Custo Medio Total"])
-        col_estoque = eirox_coluna_generica(est, ["Estoque", "Qtd Estoque", "Quantidade Estoque", "Qtd_Estoque"])
+        col_ean = eirox_coluna_generica(
+            est,
+            ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras",
+             "codigobarras", "Barras", "Código Barras", "Codigo Barras"]
+        )
+        col_custo_medio = eirox_coluna_generica(
+            est,
+            ["Custo Médio", "Custo Medio", "Custo_Medio",
+             "Custo Médio Total", "Custo Medio Total", "Custo_Medio_Total"]
+        )
+        col_estoque = eirox_coluna_generica(
+            est,
+            ["Estoque", "Qtd Estoque", "Quantidade Estoque", "Qtd_Estoque",
+             "Estoque Atual", "Quantidade em Estoque"]
+        )
 
-        if not col_ean or not col_custo_medio or not col_estoque:
-            return pd.DataFrame(columns=["EAN_JOIN_CUSTO", "Custo_Estoque_Unitario"])
+        if not col_ean:
+            return pd.DataFrame(columns=colunas_saida)
 
-        est["EAN_JOIN_CUSTO"] = est[col_ean].apply(lambda x: re.sub(r"\D", "", str(x).replace(".0", "")))
-        est["_CUSTO_MEDIO_TOTAL"] = est[col_custo_medio].apply(eirox_numero_br_para_float)
-        est["_ESTOQUE_QTD"] = est[col_estoque].apply(eirox_numero_br_para_float)
-
-        est = est[
-            est["EAN_JOIN_CUSTO"].astype(str).str.len().gt(0)
-            & est["_ESTOQUE_QTD"].fillna(0).gt(0)
-        ].copy()
-
+        est["EAN_JOIN_CUSTO"] = est[col_ean].apply(
+            lambda x: re.sub(r"\D", "", str(x).replace(".0", ""))
+        )
+        est = est[est["EAN_JOIN_CUSTO"].astype(str).str.len().gt(0)].copy()
         if est.empty:
-            return pd.DataFrame(columns=["EAN_JOIN_CUSTO", "Custo_Estoque_Unitario"])
+            return pd.DataFrame(columns=colunas_saida)
 
-        # Soma custo médio total e estoque por EAN, depois divide.
+        if col_custo_medio:
+            est["_CUSTO_MEDIO_TOTAL"] = est[col_custo_medio].apply(
+                eirox_numero_br_para_float
+            )
+        else:
+            est["_CUSTO_MEDIO_TOTAL"] = np.nan
+
+        if col_estoque:
+            est["_ESTOQUE_QTD"] = est[col_estoque].apply(
+                eirox_numero_br_para_float
+            )
+        else:
+            est["_ESTOQUE_QTD"] = np.nan
+
+        # Agrega primeiro por EAN. Não descarta silenciosamente EAN com estoque zero:
+        # eles continuam no diagnóstico com o motivo explícito.
         agg = est.groupby("EAN_JOIN_CUSTO", as_index=False).agg(
-            Custo_Medio_Total=("_CUSTO_MEDIO_TOTAL", "sum"),
-            Estoque_Total=("_ESTOQUE_QTD", "sum")
-        )
-        agg["Custo_Estoque_Unitario"] = np.where(
-            agg["Estoque_Total"] > 0,
-            agg["Custo_Medio_Total"] / agg["Estoque_Total"],
-            np.nan
+            Custo_Medio_Total_Base=("_CUSTO_MEDIO_TOTAL", "sum"),
+            Estoque_Total_Base=("_ESTOQUE_QTD", "sum"),
+            Linhas_Estoque=("_ESTOQUE_QTD", "size"),
+            Linhas_Custo_Validas=("_CUSTO_MEDIO_TOTAL", lambda s: int(pd.to_numeric(s, errors="coerce").notna().sum())),
+            Linhas_Estoque_Validas=("_ESTOQUE_QTD", lambda s: int(pd.to_numeric(s, errors="coerce").notna().sum())),
         )
 
-        return agg[["EAN_JOIN_CUSTO", "Custo_Estoque_Unitario"]]
+        custo_total = pd.to_numeric(
+            agg["Custo_Medio_Total_Base"], errors="coerce"
+        )
+        estoque_total = pd.to_numeric(
+            agg["Estoque_Total_Base"], errors="coerce"
+        )
+
+        custo_unit = pd.Series(np.nan, index=agg.index, dtype="float64")
+        ok = (
+            agg["Linhas_Custo_Validas"].gt(0)
+            & agg["Linhas_Estoque_Validas"].gt(0)
+            & custo_total.notna()
+            & custo_total.gt(0)
+            & estoque_total.notna()
+            & estoque_total.gt(0)
+        )
+        custo_unit.loc[ok] = (
+            custo_total.loc[ok] / estoque_total.loc[ok]
+        )
+
+        agg["Custo_Estoque_Unitario"] = custo_unit
+        agg["Fonte_Custo_Oficial"] = np.where(
+            custo_unit.notna() & custo_unit.gt(0),
+            "ESTOQUE_TESTE — CUSTO MÉDIO / ESTOQUE",
+            ""
+        )
+
+        motivo = pd.Series("", index=agg.index, dtype=object)
+        motivo.loc[agg["Linhas_Estoque_Validas"].le(0)] = "COLUNA/VALOR DE ESTOQUE AUSENTE"
+        motivo.loc[
+            agg["Linhas_Estoque_Validas"].gt(0)
+            & (estoque_total.isna() | estoque_total.le(0))
+        ] = "ESTOQUE ZERADO OU NEGATIVO"
+        motivo.loc[
+            agg["Linhas_Custo_Validas"].le(0)
+        ] = "CUSTO MÉDIO AUSENTE"
+        motivo.loc[
+            agg["Linhas_Custo_Validas"].gt(0)
+            & (custo_total.isna() | custo_total.le(0))
+        ] = "CUSTO MÉDIO ZERADO OU NEGATIVO"
+        motivo.loc[
+            custo_unit.notna() & custo_unit.gt(0)
+        ] = "CUSTO OFICIAL CALCULADO"
+
+        agg["Motivo_Sem_Custo"] = motivo
+
+        return agg[colunas_saida]
 
     except Exception:
-        return pd.DataFrame(columns=["EAN_JOIN_CUSTO", "Custo_Estoque_Unitario"])
+        return pd.DataFrame(columns=colunas_saida)
+
 
 
 def aplicar_custo_oficial_estoque_teste(df_base, estoque_base=None):
     """
-    Substitui/define Custo pelo custo unitário oficial do ESTOQUE_TESTE:
-    Custo Médio / Estoque.
+    V1.4.66 — aplica a fonte única oficial de custo e registra auditoria.
+
+    Custo = soma(Custo Médio do ESTOQUE_TESTE) / soma(Estoque do ESTOQUE_TESTE)
+    por EAN.
+
+    Não usa custo antigo como fallback silencioso. Quando o custo oficial não
+    puder ser calculado, registra o motivo em Motivo_Sem_Custo.
     """
     try:
         if not isinstance(df_base, pd.DataFrame) or df_base.empty:
             return df_base
 
         df = df_base.copy()
-        mapa = mapa_custo_unitario_estoque_teste(estoque_base)
 
-        if "Custo" not in df.columns:
+        # Mantém o custo anterior somente para auditoria; ele não alimenta o motor.
+        if "Custo" in df.columns:
+            df["Custo_Anterior_Auditoria"] = pd.to_numeric(
+                df["Custo"], errors="coerce"
+            )
+        else:
+            df["Custo_Anterior_Auditoria"] = np.nan
+
+        col_ean = eirox_coluna_generica(
+            df,
+            ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras",
+             "Codigo de Barras", "codigobarras"]
+        )
+
+        if not col_ean:
             df["Custo"] = np.nan
-
-        col_ean = eirox_coluna_generica(df, ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras", "codigobarras"])
-        if not col_ean or mapa.empty:
+            df["Fonte_Custo"] = ""
+            df["Motivo_Sem_Custo"] = "EAN AUSENTE NA BASE DE PRICING"
+            df["Estoque_Base_Custo"] = np.nan
+            df["Custo_Medio_Total_Base"] = np.nan
             return df
 
-        df["EAN_JOIN_CUSTO"] = df[col_ean].apply(lambda x: re.sub(r"\D", "", str(x).replace(".0", "")))
+        df["EAN_JOIN_CUSTO"] = df[col_ean].apply(
+            lambda x: re.sub(r"\D", "", str(x).replace(".0", ""))
+        )
+
+        mapa = mapa_custo_unitario_estoque_teste(estoque_base)
+        if not isinstance(mapa, pd.DataFrame) or mapa.empty:
+            df["Custo"] = np.nan
+            df["Fonte_Custo"] = ""
+            df["Motivo_Sem_Custo"] = "BASE DE ESTOQUE SEM DADOS DE CUSTO UTILIZÁVEIS"
+            df["Estoque_Base_Custo"] = np.nan
+            df["Custo_Medio_Total_Base"] = np.nan
+            df.drop(columns=["EAN_JOIN_CUSTO"], inplace=True, errors="ignore")
+            return df
+
+        mapa = mapa.drop_duplicates("EAN_JOIN_CUSTO", keep="last")
         df = df.merge(mapa, on="EAN_JOIN_CUSTO", how="left")
 
-        custo_estoque = pd.to_numeric(df["Custo_Estoque_Unitario"], errors="coerce")
-        df["Custo"] = custo_estoque.combine_first(pd.to_numeric(df["Custo"], errors="coerce"))
+        custo_oficial = pd.to_numeric(
+            df["Custo_Estoque_Unitario"], errors="coerce"
+        )
+        df["Custo"] = custo_oficial.where(
+            custo_oficial.notna() & custo_oficial.gt(0),
+            np.nan
+        )
 
-        # Recalcula lucro/margem com custo oficial, quando houver preço atual.
+        df["Fonte_Custo"] = df["Fonte_Custo_Oficial"].fillna("").astype(str)
+        df["Estoque_Base_Custo"] = pd.to_numeric(
+            df["Estoque_Total_Base"], errors="coerce"
+        )
+        df["Custo_Medio_Total_Base"] = pd.to_numeric(
+            df["Custo_Medio_Total_Base"], errors="coerce"
+        )
+
+        motivo = df["Motivo_Sem_Custo"].fillna("").astype(str)
+        nao_encontrado = (
+            df["EAN_JOIN_CUSTO"].astype(str).str.len().gt(0)
+            & motivo.eq("")
+            & custo_oficial.isna()
+        )
+        motivo.loc[nao_encontrado] = "EAN NÃO ENCONTRADO NO ESTOQUE_TESTE"
+        motivo.loc[
+            custo_oficial.notna() & custo_oficial.gt(0)
+        ] = "CUSTO OFICIAL CALCULADO"
+        df["Motivo_Sem_Custo"] = motivo
+
+        # Recalcula lucro/margem somente com custo oficial.
         preco = None
-        for c in ["Preco_Atual", "Preço Atual", "Preco Atual", "Preço_Atual"]:
+        for c in [
+            "Preco_Atual", "Preço Atual", "Preco Atual", "Preço_Atual",
+            "Preco_Ultima_Venda", "Preço Última Venda"
+        ]:
             if c in df.columns:
-                preco = pd.to_numeric(df[c], errors="coerce")
-                break
+                candidato = pd.to_numeric(df[c], errors="coerce")
+                if candidato.notna().any():
+                    preco = candidato
+                    break
 
         if preco is not None:
-            df["Lucro_Unitario"] = preco.fillna(0) - pd.to_numeric(df["Custo"], errors="coerce").fillna(0)
+            custo_num = pd.to_numeric(df["Custo"], errors="coerce")
+            df["Lucro_Unitario"] = np.where(
+                preco.gt(0) & custo_num.notna() & custo_num.gt(0),
+                preco - custo_num,
+                np.nan
+            )
             df["Lucro Unitário"] = df["Lucro_Unitario"]
-            df["Margem_%"] = np.where(preco.fillna(0) > 0, df["Lucro_Unitario"] / preco, 0)
+            df["Margem_%"] = np.where(
+                preco.gt(0) & custo_num.notna() & custo_num.gt(0),
+                df["Lucro_Unitario"] / preco,
+                np.nan
+            )
 
-        df.drop(columns=["EAN_JOIN_CUSTO", "Custo_Estoque_Unitario"], inplace=True, errors="ignore")
+        df.drop(
+            columns=[
+                "EAN_JOIN_CUSTO",
+                "Custo_Estoque_Unitario",
+                "Fonte_Custo_Oficial",
+                "Estoque_Total_Base",
+            ],
+            inplace=True,
+            errors="ignore"
+        )
         return df
 
     except Exception:
         return df_base
+
 
 
 def aplicar_regras_cliente_e_custo_oficiais(df_base, estoque_base=None):
@@ -7586,6 +7788,14 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
             dfp = corrigir_lab_familia_recomendacoes(
                 dfp, compra_base, estoque_base
             )
+        except Exception:
+            pass
+
+        # V1.4.66 — barreira final: nenhum enriquecimento posterior pode
+        # substituir a fonte oficial do custo.
+        try:
+            dfp = aplicar_custo_oficial_estoque_teste(dfp, estoque_base)
+            dfp = aplicar_engine_recomendacoes_restaurada(dfp)
         except Exception:
             pass
 
@@ -15953,6 +16163,9 @@ def eirox_processar_base_master_cacheada(
     base = aplicar_engine_recomendacoes_restaurada(base)
     base = aplicar_regra_rede_menor_preco(base)
     base = corrigir_lab_familia_recomendacoes(base, _compra_base, _estoque_base)
+    # V1.4.66 — custo oficial reaplicado no final da preparação cacheada.
+    base = aplicar_custo_oficial_estoque_teste(base, _estoque_base)
+    base = aplicar_engine_recomendacoes_restaurada(base)
     return base
 
 
@@ -29056,6 +29269,42 @@ if _eirox_visao_dashboard_v160 == "🤖 Índice Eirox Calculado":
         {"Pendência": "Sem referência de mercado", "Produtos": _q_sem_mercado_v165},
         {"Pendência": "Sem volume no último mês fechado", "Produtos": _q_sem_volume_v165},
     ])
+
+    # V1.4.66 — motivos reais dos produtos sem custo.
+    _motivos_custo_v166 = pd.DataFrame()
+    try:
+        if "Motivo_Sem_Custo" in df_filtrado.columns:
+            _tmp_mot_v166 = df_filtrado.copy()
+            _c_ean_mot_v166 = _eirox_first_col(
+                _tmp_mot_v166, ["EAN","EAN (GTIN)","GTIN","Código de Barras"]
+            )
+            if _c_ean_mot_v166:
+                _tmp_mot_v166["__EAN_MOT_V166"] = _ean(
+                    _tmp_mot_v166[_c_ean_mot_v166]
+                )
+            else:
+                _tmp_mot_v166["__EAN_MOT_V166"] = _tmp_mot_v166.index.astype(str)
+
+            _tmp_mot_v166["Motivo_Sem_Custo"] = (
+                _tmp_mot_v166["Motivo_Sem_Custo"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+            _tmp_mot_v166 = _tmp_mot_v166[
+                _tmp_mot_v166["Motivo_Sem_Custo"].ne("")
+                & ~_tmp_mot_v166["Motivo_Sem_Custo"].eq("CUSTO OFICIAL CALCULADO")
+            ].drop_duplicates("__EAN_MOT_V166", keep="first")
+
+            if not _tmp_mot_v166.empty:
+                _motivos_custo_v166 = (
+                    _tmp_mot_v166["Motivo_Sem_Custo"]
+                    .value_counts()
+                    .rename_axis("Motivo do custo ausente")
+                    .reset_index(name="Produtos")
+                )
+    except Exception:
+        _motivos_custo_v166 = pd.DataFrame()
     _pendencias_v165 = _pendencias_v165[_pendencias_v165["Produtos"].gt(0)].copy()
 
     if _pendencias_v165.empty:
@@ -29070,6 +29319,61 @@ if _eirox_visao_dashboard_v160 == "🤖 Índice Eirox Calculado":
             use_container_width=True,
             hide_index=True
         )
+
+    if isinstance(_motivos_custo_v166, pd.DataFrame) and not _motivos_custo_v166.empty:
+        with st.expander("🧾 Por que existem produtos sem custo?", expanded=False):
+            st.caption(
+                "Diagnóstico pela fonte oficial ESTOQUE_TESTE. "
+                "Custo Unitário = Custo Médio total ÷ Estoque total por EAN."
+            )
+            eirox_dataframe_brl(
+                _motivos_custo_v166,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            try:
+                _det_custo_v166 = df_filtrado.copy()
+                _c_ean_det_v166 = _eirox_first_col(
+                    _det_custo_v166, ["EAN","EAN (GTIN)","GTIN","Código de Barras"]
+                )
+                _c_prod_det_v166 = _eirox_first_col(
+                    _det_custo_v166, ["Produto","Descrição","Descricao"]
+                )
+                _cols_det_v166 = []
+                if _c_ean_det_v166:
+                    _cols_det_v166.append(_c_ean_det_v166)
+                if _c_prod_det_v166:
+                    _cols_det_v166.append(_c_prod_det_v166)
+                for _c in [
+                    "Motivo_Sem_Custo","Estoque_Base_Custo",
+                    "Custo_Medio_Total_Base","Custo_Anterior_Auditoria"
+                ]:
+                    if _c in _det_custo_v166.columns:
+                        _cols_det_v166.append(_c)
+
+                if _cols_det_v166:
+                    _det_custo_v166 = _det_custo_v166[_cols_det_v166].copy()
+                    if "Motivo_Sem_Custo" in _det_custo_v166.columns:
+                        _det_custo_v166 = _det_custo_v166[
+                            _det_custo_v166["Motivo_Sem_Custo"]
+                            .fillna("")
+                            .astype(str)
+                            .ne("CUSTO OFICIAL CALCULADO")
+                            & _det_custo_v166["Motivo_Sem_Custo"]
+                            .fillna("")
+                            .astype(str)
+                            .ne("")
+                        ]
+                    _det_custo_v166 = _det_custo_v166.drop_duplicates()
+                    eirox_dataframe_brl(
+                        _det_custo_v166,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=420
+                    )
+            except Exception:
+                pass
 
     st.markdown("### Composição do Índice")
     if _margem_tem_dado_v165:
