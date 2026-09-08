@@ -134,128 +134,191 @@ def eirox_v143_ultima_pesquisa():
 
 
 
+
 def eirox_v146_ultimo_mes_fechado():
     """
-    Fallback do Preço Atual:
-    lê somente o último mês FECHADO disponível em VENDA_FINAL_TESTE e calcula
-    Preço de Venda = Venda / Itens por EAN.
+    V1.4.47 — fallback por EAN na VENDA_FINAL_TESTE.
+
+    Para cada EAN:
+      - considera somente competências já fechadas (< mês atual);
+      - localiza a competência MAIS RECENTE em que o produto teve venda válida;
+      - calcula Preço de Venda = Venda / Itens nessa competência;
+      - se o produto não vendeu no mês fechado mais recente da pasta, recua
+        somente para esse EAN até encontrar seu último mês fechado com venda.
     """
     pasta = Path(__file__).resolve().parent / "VENDA_FINAL_TESTE"
     vazio = pd.DataFrame(columns=[
-        "EAN", "Preco_Fallback_Mes_Fechado", "Mes_Fechado_Referencia"
+        "EAN", "Preco_Fallback_Mes_Fechado", "Mes_Fechado_Referencia",
+        "Venda_Mes_Fechado", "Itens_Mes_Fechado"
     ])
+
     try:
         arquivos = [
-            p for p in list(pasta.glob("*.xlsx")) + list(pasta.glob("*.xls")) +
-                     list(pasta.glob("*.csv"))
+            p for p in (
+                list(pasta.glob("*.xlsx")) +
+                list(pasta.glob("*.xls")) +
+                list(pasta.glob("*.csv"))
+            )
             if not p.name.startswith("~$")
         ]
     except Exception:
         arquivos = []
+
     if not arquivos:
         return vazio
 
-    hoje = pd.Timestamp.now()
-    mes_atual = hoje.year * 100 + hoje.month
+    agora = pd.Timestamp.now()
+    mes_atual = int(agora.year * 100 + agora.month)
 
-    candidatos = []
-    for p in arquivos:
-        nome = p.stem
-        achados = re.findall(r"(?<!\d)(20\d{2})[-_ ]?(0[1-9]|1[0-2])(?!\d)", nome)
+    linhas = []
+
+    def _competencia_do_arquivo(path, df=None):
+        # Prioridade: a competência informada DENTRO da própria base.
+        # O nome do arquivo é apenas fallback, pois pode não refletir o ano real.
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            cc = _col(df, [
+                "Ano-mês", "Ano-mes", "Ano Mes", "Ano_Mes",
+                "Competência", "Competencia", "Mes", "Mês",
+                "Data Venda", "Data_Venda", "Data"
+            ])
+            if cc is not None:
+                s = df[cc]
+                txt = s.astype(str).str.strip()
+                ext = txt.str.extract(r"(20\d{2})\D*([01]\d)")
+                valid = ext[0].notna() & ext[1].notna()
+                if valid.any():
+                    vals = (
+                        pd.to_numeric(ext.loc[valid,0], errors="coerce") * 100 +
+                        pd.to_numeric(ext.loc[valid,1], errors="coerce")
+                    ).dropna()
+                    if not vals.empty:
+                        return int(vals.max())
+                dt = pd.to_datetime(s, errors="coerce", dayfirst=True, format="mixed")
+                dt = dt.dropna()
+                if not dt.empty:
+                    dmax = dt.max()
+                    return int(dmax.year * 100 + dmax.month)
+
+        # Fallback: YYYYMM / YYYY-MM / YYYY_MM no nome do arquivo.
+        achados = re.findall(
+            r"(?<!\d)(20\d{2})[-_ ]?(0[1-9]|1[0-2])(?!\d)",
+            path.stem
+        )
         if achados:
             ano, mes = achados[-1]
-            ym = int(ano) * 100 + int(mes)
-            if ym < mes_atual:
-                candidatos.append((ym, p))
+            return int(ano) * 100 + int(mes)
+        return None
 
-    # Se o nome não trouxer YYYYMM, tenta descobrir o mês pelas colunas de data.
-    if candidatos:
-        ultimo_ym = max(x[0] for x in candidatos)
-        selecionados = [p for ym,p in candidatos if ym == ultimo_ym]
-    else:
-        selecionados = []
-        ultimo_ym = None
-        for p in arquivos:
-            try:
-                if p.suffix.lower() == ".csv":
-                    df0 = pd.read_csv(p, sep=None, engine="python", nrows=5000)
-                else:
-                    df0 = pd.read_excel(p, nrows=5000)
-            except Exception:
-                continue
-            cd = _col(df0, [
-                "Data Venda", "Data_Venda", "Data", "Data Movimento",
-                "DataHora", "Data Hora", "DataHoraVenda"
-            ])
-            if cd is None:
-                continue
-            dt = pd.to_datetime(df0[cd], errors="coerce", dayfirst=True, format="mixed")
-            dt = dt.dropna()
-            if dt.empty:
-                continue
-            ym_file = int((dt.max().year * 100) + dt.max().month)
-            if ym_file < mes_atual and (ultimo_ym is None or ym_file > ultimo_ym):
-                ultimo_ym = ym_file
-                selecionados = [p]
-            elif ym_file == ultimo_ym:
-                selecionados.append(p)
-
-    if ultimo_ym is None or not selecionados:
-        return vazio
-
-    frames = []
-    for p in selecionados:
+    for p in arquivos:
         try:
             if p.suffix.lower() == ".csv":
-                df = pd.read_csv(p, sep=None, engine="python",
-                                 dtype=str, encoding_errors="ignore")
+                try:
+                    df = pd.read_csv(p, sep=None, engine="python", dtype=str, encoding="utf-8-sig")
+                except Exception:
+                    df = pd.read_csv(p, sep=None, engine="python", dtype=str, encoding_errors="ignore")
             else:
                 df = pd.read_excel(p, dtype=str)
-            df["__ARQUIVO_MES_FECHADO"] = p.name
-            frames.append(df)
         except Exception:
             continue
-    if not frames:
+
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            continue
+
+        competencia = _competencia_do_arquivo(p, df)
+        if competencia is None or competencia >= mes_atual:
+            # Nunca usa mês em aberto.
+            continue
+
+        ce = _col(df, [
+            "EAN", "EAN (GTIN)", "GTIN", "Cód. Barras/Etiq.",
+            "Cod. Barras/Etiq.", "Código de Barras", "Codigo de Barras",
+            "codigobarras"
+        ])
+        cv = _col(df, [
+            "Venda", "Valor Venda", "Faturamento", "Valor Líquido",
+            "Valor Liquido", "Total Venda", "Valor Total"
+        ])
+        cq = _col(df, [
+            "Itens", "Item", "Quantidade", "Qtd", "QTD", "Qtde",
+            "Quantidade Vendida", "Qtd Vendida", "Unidades"
+        ])
+        if ce is None or cv is None or cq is None:
+            continue
+
+        tmp = pd.DataFrame(index=df.index)
+        tmp["EAN"] = _ean(df[ce])
+        tmp["Venda"] = _num(df[cv])
+        tmp["Itens"] = _num(df[cq])
+        tmp["COMPETENCIA"] = int(competencia)
+
+        tmp = tmp[
+            tmp["EAN"].ne("") &
+            tmp["Venda"].notna() &
+            tmp["Itens"].notna() &
+            tmp["Venda"].gt(0) &
+            tmp["Itens"].gt(0)
+        ].copy()
+
+        if not tmp.empty:
+            linhas.append(tmp)
+
+    if not linhas:
         return vazio
 
-    b = pd.concat(frames, ignore_index=True)
-    ce = _col(b, [
-        "EAN", "EAN (GTIN)", "GTIN", "Cód. Barras/Etiq.",
-        "Cod. Barras/Etiq.", "Código de Barras", "Codigo de Barras",
-        "codigobarras"
-    ])
-    cv = _col(b, [
-        "Venda", "Valor Venda", "Faturamento", "Valor Líquido",
-        "Valor Liquido", "Total Venda", "Valor Total"
-    ])
-    cq = _col(b, [
-        "Itens", "Item", "Quantidade", "Qtd", "QTD", "Qtde",
-        "Quantidade Vendida", "Qtd Vendida", "Unidades"
-    ])
-    if ce is None or cv is None or cq is None:
-        return vazio
+    base = pd.concat(linhas, ignore_index=True)
 
-    tmp = pd.DataFrame(index=b.index)
-    tmp["EAN"] = _ean(b[ce])
-    tmp["Venda"] = _num(b[cv])
-    tmp["Itens"] = _num(b[cq])
-    tmp = tmp[tmp["EAN"].ne("") & tmp["Venda"].notna() & tmp["Itens"].notna()].copy()
-    if tmp.empty:
-        return vazio
-
-    agg = tmp.groupby("EAN", as_index=False).agg(
-        Venda=("Venda","sum"),
-        Itens=("Itens","sum")
+    # Se houver mais de um arquivo/linha na mesma competência, soma antes.
+    mensal = (
+        base.groupby(["EAN", "COMPETENCIA"], as_index=False)
+        .agg(
+            Venda_Mes_Fechado=("Venda", "sum"),
+            Itens_Mes_Fechado=("Itens", "sum")
+        )
     )
-    agg["Preco_Fallback_Mes_Fechado"] = (
-        agg["Venda"] / agg["Itens"].replace(0, np.nan)
-    )
-    agg = agg[
-        agg["Preco_Fallback_Mes_Fechado"].notna() &
-        agg["Preco_Fallback_Mes_Fechado"].gt(0)
+
+    mensal = mensal[
+        mensal["Venda_Mes_Fechado"].gt(0) &
+        mensal["Itens_Mes_Fechado"].gt(0)
     ].copy()
-    agg["Mes_Fechado_Referencia"] = f"{ultimo_ym // 100:04d}-{ultimo_ym % 100:02d}"
-    return agg[["EAN","Preco_Fallback_Mes_Fechado","Mes_Fechado_Referencia"]]
+    if mensal.empty:
+        return vazio
+
+    mensal["Preco_Fallback_Mes_Fechado"] = (
+        mensal["Venda_Mes_Fechado"] /
+        mensal["Itens_Mes_Fechado"].replace(0, np.nan)
+    )
+
+    mensal = mensal[
+        mensal["Preco_Fallback_Mes_Fechado"].notna() &
+        mensal["Preco_Fallback_Mes_Fechado"].gt(0)
+    ].copy()
+    if mensal.empty:
+        return vazio
+
+    # Regra decisiva: último mês fechado COM VENDA de cada EAN.
+    mensal = mensal.sort_values(
+        ["EAN", "COMPETENCIA"],
+        ascending=[True, True],
+        kind="stable"
+    )
+    ult = (
+        mensal.groupby("EAN", as_index=False, sort=False)
+        .tail(1)
+        .copy()
+    )
+
+    ult["Mes_Fechado_Referencia"] = ult["COMPETENCIA"].apply(
+        lambda ym: f"{int(ym)//100:04d}-{int(ym)%100:02d}"
+    )
+
+    return ult[[
+        "EAN",
+        "Preco_Fallback_Mes_Fechado",
+        "Mes_Fechado_Referencia",
+        "Venda_Mes_Fechado",
+        "Itens_Mes_Fechado"
+    ]].reset_index(drop=True)
+
 
 
 def eirox_v146_preco_principal():
@@ -308,7 +371,7 @@ def eirox_v146_preco_principal():
 
 def eirox_v143_aplicar_preco(base):
     """
-    V1.4.46 — Preço Atual:
+    V1.4.47 — Preço Atual:
     1) VENDA_TESTE pela última Data Emissão do Principal;
     2) se não houver EAN, VENDA_FINAL_TESTE do último mês fechado,
        calculando Venda / Itens.
@@ -19751,7 +19814,7 @@ def eirox_v147_corrigir_lista_subir_final(tab):
                         out.at[idx, "Custo Unitário"] = _eirox_moeda_num(cu_calc)
 
 
-    # V1.4.46 — barreira visual final com prioridade VENDA_TESTE e
+    # V1.4.47 — barreira visual final com prioridade VENDA_TESTE e
     # fallback VENDA_FINAL_TESTE do último mês fechado (Venda / Itens).
     try:
         _mapa = eirox_v146_preco_principal()
