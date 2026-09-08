@@ -132,8 +132,45 @@ def eirox_v143_ultima_pesquisa():
     )))
     return _v143_cached_latest(assinatura, cnpjs).copy()
 
+
 def eirox_v143_aplicar_preco(base):
-    return apply_latest(base, eirox_v143_ultima_pesquisa())
+    """
+    V1.4.45 — anota a última ocorrência do Principal na VENDA_TESTE sem
+    destruir a referência usada pelas sugestões.
+    """
+    if not isinstance(base, pd.DataFrame) or base.empty:
+        return base
+    d = base.copy()
+    latest = eirox_v143_ultima_pesquisa()
+    ce = _col(d, ["EAN", "EAN (GTIN)", "GTIN"])
+    if ce is None:
+        return d
+
+    keys = _ean(d[ce])
+    if isinstance(latest, pd.DataFrame) and not latest.empty:
+        lk = latest.drop_duplicates("EAN", keep="last").set_index("EAN")
+        real = keys.map(lk["Preco_Ultima_Venda"])
+        data = keys.map(lk["Data_Ultima_Venda"])
+    else:
+        real = pd.Series(np.nan, index=d.index, dtype="float64")
+        data = pd.Series(pd.NaT, index=d.index)
+
+    # Guarda o valor já existente como referência, mas nunca o chama de
+    # última venda. Isso preserva a quantidade de sugestões.
+    ref = pd.Series(np.nan, index=d.index, dtype="float64")
+    for nome in [
+        "Preco_Referencia_Calculo", "Preço Referência Cálculo",
+        "Preco_Atual", "Preço_Atual", "Preço Atual",
+        "Preco_Atual_Venda", "Preço_Atual_Venda"
+    ]:
+        if nome in d.columns:
+            s = pd.to_numeric(d[nome], errors="coerce")
+            ref = ref.where(ref.notna() & (ref > 0), s)
+    d["Preco_Referencia_Calculo"] = ref
+    d["Preco_Ultima_Venda"] = pd.to_numeric(real, errors="coerce")
+    d["Data_Ultima_Venda"] = data
+    return d
+
 
 import numpy as np
 import plotly.express as px
@@ -1293,9 +1330,13 @@ def _v143_original_construir_base_pricing_somente_pastas(historico, compra, vend
         return pd.DataFrame()
 
 
+
 def construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque):
-    d = _v143_original_construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque)
+    d = _v143_original_construir_base_pricing_somente_pastas(
+        historico, compra, venda_rede, estoque
+    )
     return eirox_v143_aplicar_preco(d)
+
 
 
 
@@ -8985,12 +9026,15 @@ def _v143_original_recalcular_ganho_inteligente(df_base, venda_rede_base, histor
     return df_calc, simulacao, "venda_rede_historico_inteligente"
 
 
+
 def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
     resultado = _v143_original_recalcular_ganho_inteligente(
-        df_base, venda_rede_base, historico_base)
+        df_base, venda_rede_base, historico_base
+    )
     if isinstance(resultado, tuple) and resultado and isinstance(resultado[0], pd.DataFrame):
         return (eirox_v143_aplicar_preco(resultado[0]), *resultado[1:])
     return resultado
+
 
 
 
@@ -18163,10 +18207,55 @@ def _v143_original_eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MI
     return d
 
 
+
 def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
-    # A fonte é resolvida antes da classificação; não há preço inventado.
+    """
+    V1.4.45 — classificação usa a última ocorrência real quando existe;
+    caso contrário mantém a referência anterior para não eliminar sugestões.
+    Preço Atual exibido permanece exclusivamente o preço real da VENDA_TESTE.
+    """
+    if not isinstance(base, pd.DataFrame) or base.empty:
+        return pd.DataFrame()
+
     d = eirox_v143_aplicar_preco(base)
-    return _v143_original_eirox_motor_oportunidades(d, margem_minima=margem_minima)
+    real = pd.to_numeric(
+        d.get("Preco_Ultima_Venda", pd.Series(np.nan, index=d.index)),
+        errors="coerce"
+    )
+    ref = pd.to_numeric(
+        d.get("Preco_Referencia_Calculo", pd.Series(np.nan, index=d.index)),
+        errors="coerce"
+    )
+    calc = real.where(real.notna() & (real > 0), ref)
+
+    # O motor legado recebe uma coluna temporária completa para manter suas
+    # regras e filtros. Ela não é exibida como Preço Atual.
+    temp = d.copy()
+    temp["Preco_Ultima_Venda"] = calc
+    temp["Preco_Atual"] = calc
+    temp["Preco_Atual_Venda"] = calc
+
+    motor = _v143_original_eirox_motor_oportunidades(
+        temp, margem_minima=margem_minima
+    )
+    if not isinstance(motor, pd.DataFrame) or motor.empty:
+        return motor
+
+    # Reanexa por índice, preservando a ordem/filtragem do motor.
+    real_m = real.reindex(motor.index)
+    ref_m = ref.reindex(motor.index)
+    calc_m = calc.reindex(motor.index)
+
+    motor["Preço_Atual_Eirox"] = real_m
+    motor["Preço_Referencia_Calculo_Eirox"] = ref_m
+    motor["Preço_Base_Calculo_Eirox"] = calc_m
+    motor["Fonte_Preço_Eirox"] = np.where(
+        real_m.notna() & (real_m > 0),
+        "ÚLTIMA VENDA",
+        np.where(ref_m.notna() & (ref_m > 0), "REFERÊNCIA MENSAL", "SEM PREÇO")
+    )
+    return motor
+
 
 
 def eirox_resumo_oportunidades(base):
@@ -19483,6 +19572,41 @@ def eirox_v147_corrigir_lista_subir_final(tab):
                     cu_calc = pa * (1.0 - mg)
                     if cu_calc >= 0:
                         out.at[idx, "Custo Unitário"] = _eirox_moeda_num(cu_calc)
+
+
+    # V1.4.45 — barreira visual final: Preço Atual e Flag vêm diretamente
+    # da última Data Emissão do Principal na VENDA_TESTE.
+    try:
+        _ult = eirox_v143_ultima_pesquisa()
+        if isinstance(_ult, pd.DataFrame) and not _ult.empty and "EAN" in out.columns:
+            _lk = _ult.drop_duplicates("EAN", keep="last").set_index("EAN")
+            _keys = _ean(out["EAN"])
+            _real = _keys.map(_lk["Preco_Ultima_Venda"])
+            _data_real = _keys.map(_lk["Data_Ultima_Venda"])
+            if "Preço Atual" not in out.columns:
+                out["Preço Atual"] = ""
+            out["Preço Atual"] = [
+                _eirox_moeda_num(v) if pd.notna(v) and float(v) > 0 else ""
+                for v in _real
+            ]
+            if "Flag Preço" not in out.columns:
+                out["Flag Preço"] = ""
+            _ref_col = "Preço Ref. Cálculo" if "Preço Ref. Cálculo" in out.columns else None
+            _ref_ok = (
+                out[_ref_col].apply(_num).gt(0)
+                if _ref_col else pd.Series(False, index=out.index)
+            )
+            out["Flag Preço"] = np.where(
+                _real.notna() & (_real > 0),
+                "✅ ÚLTIMA VENDA",
+                np.where(_ref_ok, "⚠️ REFERÊNCIA MENSAL", "⚠️ SEM PREÇO")
+            )
+            out["Data Última Venda"] = [
+                v.strftime("%d/%m/%Y %H:%M:%S") if pd.notna(v) else ""
+                for v in _data_real
+            ]
+    except Exception:
+        pass
 
     return out.reset_index(drop=True)
 
