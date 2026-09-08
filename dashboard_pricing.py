@@ -133,30 +133,209 @@ def eirox_v143_ultima_pesquisa():
     return _v143_cached_latest(assinatura, cnpjs).copy()
 
 
+
+def eirox_v146_ultimo_mes_fechado():
+    """
+    Fallback do Preço Atual:
+    lê somente o último mês FECHADO disponível em VENDA_FINAL_TESTE e calcula
+    Preço de Venda = Venda / Itens por EAN.
+    """
+    pasta = Path(__file__).resolve().parent / "VENDA_FINAL_TESTE"
+    vazio = pd.DataFrame(columns=[
+        "EAN", "Preco_Fallback_Mes_Fechado", "Mes_Fechado_Referencia"
+    ])
+    try:
+        arquivos = [
+            p for p in list(pasta.glob("*.xlsx")) + list(pasta.glob("*.xls")) +
+                     list(pasta.glob("*.csv"))
+            if not p.name.startswith("~$")
+        ]
+    except Exception:
+        arquivos = []
+    if not arquivos:
+        return vazio
+
+    hoje = pd.Timestamp.now()
+    mes_atual = hoje.year * 100 + hoje.month
+
+    candidatos = []
+    for p in arquivos:
+        nome = p.stem
+        achados = re.findall(r"(?<!\d)(20\d{2})[-_ ]?(0[1-9]|1[0-2])(?!\d)", nome)
+        if achados:
+            ano, mes = achados[-1]
+            ym = int(ano) * 100 + int(mes)
+            if ym < mes_atual:
+                candidatos.append((ym, p))
+
+    # Se o nome não trouxer YYYYMM, tenta descobrir o mês pelas colunas de data.
+    if candidatos:
+        ultimo_ym = max(x[0] for x in candidatos)
+        selecionados = [p for ym,p in candidatos if ym == ultimo_ym]
+    else:
+        selecionados = []
+        ultimo_ym = None
+        for p in arquivos:
+            try:
+                if p.suffix.lower() == ".csv":
+                    df0 = pd.read_csv(p, sep=None, engine="python", nrows=5000)
+                else:
+                    df0 = pd.read_excel(p, nrows=5000)
+            except Exception:
+                continue
+            cd = _col(df0, [
+                "Data Venda", "Data_Venda", "Data", "Data Movimento",
+                "DataHora", "Data Hora", "DataHoraVenda"
+            ])
+            if cd is None:
+                continue
+            dt = pd.to_datetime(df0[cd], errors="coerce", dayfirst=True, format="mixed")
+            dt = dt.dropna()
+            if dt.empty:
+                continue
+            ym_file = int((dt.max().year * 100) + dt.max().month)
+            if ym_file < mes_atual and (ultimo_ym is None or ym_file > ultimo_ym):
+                ultimo_ym = ym_file
+                selecionados = [p]
+            elif ym_file == ultimo_ym:
+                selecionados.append(p)
+
+    if ultimo_ym is None or not selecionados:
+        return vazio
+
+    frames = []
+    for p in selecionados:
+        try:
+            if p.suffix.lower() == ".csv":
+                df = pd.read_csv(p, sep=None, engine="python",
+                                 dtype=str, encoding_errors="ignore")
+            else:
+                df = pd.read_excel(p, dtype=str)
+            df["__ARQUIVO_MES_FECHADO"] = p.name
+            frames.append(df)
+        except Exception:
+            continue
+    if not frames:
+        return vazio
+
+    b = pd.concat(frames, ignore_index=True)
+    ce = _col(b, [
+        "EAN", "EAN (GTIN)", "GTIN", "Cód. Barras/Etiq.",
+        "Cod. Barras/Etiq.", "Código de Barras", "Codigo de Barras",
+        "codigobarras"
+    ])
+    cv = _col(b, [
+        "Venda", "Valor Venda", "Faturamento", "Valor Líquido",
+        "Valor Liquido", "Total Venda", "Valor Total"
+    ])
+    cq = _col(b, [
+        "Itens", "Item", "Quantidade", "Qtd", "QTD", "Qtde",
+        "Quantidade Vendida", "Qtd Vendida", "Unidades"
+    ])
+    if ce is None or cv is None or cq is None:
+        return vazio
+
+    tmp = pd.DataFrame(index=b.index)
+    tmp["EAN"] = _ean(b[ce])
+    tmp["Venda"] = _num(b[cv])
+    tmp["Itens"] = _num(b[cq])
+    tmp = tmp[tmp["EAN"].ne("") & tmp["Venda"].notna() & tmp["Itens"].notna()].copy()
+    if tmp.empty:
+        return vazio
+
+    agg = tmp.groupby("EAN", as_index=False).agg(
+        Venda=("Venda","sum"),
+        Itens=("Itens","sum")
+    )
+    agg["Preco_Fallback_Mes_Fechado"] = (
+        agg["Venda"] / agg["Itens"].replace(0, np.nan)
+    )
+    agg = agg[
+        agg["Preco_Fallback_Mes_Fechado"].notna() &
+        agg["Preco_Fallback_Mes_Fechado"].gt(0)
+    ].copy()
+    agg["Mes_Fechado_Referencia"] = f"{ultimo_ym // 100:04d}-{ultimo_ym % 100:02d}"
+    return agg[["EAN","Preco_Fallback_Mes_Fechado","Mes_Fechado_Referencia"]]
+
+
+def eirox_v146_preco_principal():
+    """
+    Prioridade:
+      1) VENDA_TESTE: última Data Emissão do Principal por EAN.
+      2) Se o EAN não existir ali: VENDA_FINAL_TESTE, último mês fechado,
+         Preço de Venda = Venda / Itens.
+    """
+    pesquisa = eirox_v143_ultima_pesquisa()
+    fechado = eirox_v146_ultimo_mes_fechado()
+
+    eans = set()
+    if isinstance(pesquisa, pd.DataFrame) and not pesquisa.empty:
+        eans.update(pesquisa["EAN"].astype(str))
+    if isinstance(fechado, pd.DataFrame) and not fechado.empty:
+        eans.update(fechado["EAN"].astype(str))
+    if not eans:
+        return pd.DataFrame(columns=[
+            "EAN","Preco_Principal_Final","Fonte_Preco_Principal",
+            "Data_Ultima_Venda","Mes_Fechado_Referencia"
+        ])
+
+    out = pd.DataFrame({"EAN": sorted(eans)})
+    if isinstance(pesquisa, pd.DataFrame) and not pesquisa.empty:
+        p = pesquisa[["EAN","Preco_Ultima_Venda","Data_Ultima_Venda"]].drop_duplicates("EAN", keep="last")
+        out = out.merge(p, on="EAN", how="left")
+    else:
+        out["Preco_Ultima_Venda"] = np.nan
+        out["Data_Ultima_Venda"] = pd.NaT
+
+    if isinstance(fechado, pd.DataFrame) and not fechado.empty:
+        f = fechado.drop_duplicates("EAN", keep="last")
+        out = out.merge(f, on="EAN", how="left")
+    else:
+        out["Preco_Fallback_Mes_Fechado"] = np.nan
+        out["Mes_Fechado_Referencia"] = ""
+
+    real = pd.to_numeric(out["Preco_Ultima_Venda"], errors="coerce")
+    fb = pd.to_numeric(out["Preco_Fallback_Mes_Fechado"], errors="coerce")
+    out["Preco_Principal_Final"] = real.where(real.notna() & real.gt(0), fb)
+    out["Fonte_Preco_Principal"] = np.where(
+        real.notna() & real.gt(0),
+        "ÚLTIMA VENDA",
+        np.where(fb.notna() & fb.gt(0), "ÚLTIMO MÊS FECHADO", "SEM PREÇO")
+    )
+    return out
+
+
+
 def eirox_v143_aplicar_preco(base):
     """
-    V1.4.45 — anota a última ocorrência do Principal na VENDA_TESTE sem
-    destruir a referência usada pelas sugestões.
+    V1.4.46 — Preço Atual:
+    1) VENDA_TESTE pela última Data Emissão do Principal;
+    2) se não houver EAN, VENDA_FINAL_TESTE do último mês fechado,
+       calculando Venda / Itens.
     """
     if not isinstance(base, pd.DataFrame) or base.empty:
         return base
     d = base.copy()
-    latest = eirox_v143_ultima_pesquisa()
     ce = _col(d, ["EAN", "EAN (GTIN)", "GTIN"])
     if ce is None:
         return d
 
+    mapa = eirox_v146_preco_principal()
     keys = _ean(d[ce])
-    if isinstance(latest, pd.DataFrame) and not latest.empty:
-        lk = latest.drop_duplicates("EAN", keep="last").set_index("EAN")
-        real = keys.map(lk["Preco_Ultima_Venda"])
-        data = keys.map(lk["Data_Ultima_Venda"])
-    else:
-        real = pd.Series(np.nan, index=d.index, dtype="float64")
-        data = pd.Series(pd.NaT, index=d.index)
 
-    # Guarda o valor já existente como referência, mas nunca o chama de
-    # última venda. Isso preserva a quantidade de sugestões.
+    if isinstance(mapa, pd.DataFrame) and not mapa.empty:
+        lk = mapa.drop_duplicates("EAN", keep="last").set_index("EAN")
+        final = keys.map(lk["Preco_Principal_Final"])
+        fonte = keys.map(lk["Fonte_Preco_Principal"])
+        data = keys.map(lk["Data_Ultima_Venda"])
+        mes = keys.map(lk["Mes_Fechado_Referencia"])
+    else:
+        final = pd.Series(np.nan,index=d.index,dtype="float64")
+        fonte = pd.Series("SEM PREÇO",index=d.index,dtype="object")
+        data = pd.Series(pd.NaT,index=d.index)
+        mes = pd.Series("",index=d.index,dtype="object")
+
+    # Mantém referência anterior separada para auditoria/cálculos.
     ref = pd.Series(np.nan, index=d.index, dtype="float64")
     for nome in [
         "Preco_Referencia_Calculo", "Preço Referência Cálculo",
@@ -166,10 +345,14 @@ def eirox_v143_aplicar_preco(base):
         if nome in d.columns:
             s = pd.to_numeric(d[nome], errors="coerce")
             ref = ref.where(ref.notna() & (ref > 0), s)
+
     d["Preco_Referencia_Calculo"] = ref
-    d["Preco_Ultima_Venda"] = pd.to_numeric(real, errors="coerce")
+    d["Preco_Ultima_Venda"] = pd.to_numeric(final, errors="coerce")
     d["Data_Ultima_Venda"] = data
+    d["Mes_Fechado_Referencia"] = mes
+    d["Fonte_Preço_Eirox"] = fonte.fillna("SEM PREÇO")
     return d
+
 
 
 import numpy as np
@@ -18208,28 +18391,22 @@ def _v143_original_eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MI
 
 
 
+
 def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
-    """
-    V1.4.45 — classificação usa a última ocorrência real quando existe;
-    caso contrário mantém a referência anterior para não eliminar sugestões.
-    Preço Atual exibido permanece exclusivamente o preço real da VENDA_TESTE.
-    """
-    if not isinstance(base, pd.DataFrame) or base.empty:
+    d = eirox_v143_aplicar_preco(base)
+    if not isinstance(d, pd.DataFrame) or d.empty:
         return pd.DataFrame()
 
-    d = eirox_v143_aplicar_preco(base)
-    real = pd.to_numeric(
-        d.get("Preco_Ultima_Venda", pd.Series(np.nan, index=d.index)),
+    final = pd.to_numeric(
+        d.get("Preco_Ultima_Venda", pd.Series(np.nan,index=d.index)),
         errors="coerce"
     )
     ref = pd.to_numeric(
-        d.get("Preco_Referencia_Calculo", pd.Series(np.nan, index=d.index)),
+        d.get("Preco_Referencia_Calculo", pd.Series(np.nan,index=d.index)),
         errors="coerce"
     )
-    calc = real.where(real.notna() & (real > 0), ref)
+    calc = final.where(final.notna() & final.gt(0), ref)
 
-    # O motor legado recebe uma coluna temporária completa para manter suas
-    # regras e filtros. Ela não é exibida como Preço Atual.
     temp = d.copy()
     temp["Preco_Ultima_Venda"] = calc
     temp["Preco_Atual"] = calc
@@ -18238,23 +18415,23 @@ def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
     motor = _v143_original_eirox_motor_oportunidades(
         temp, margem_minima=margem_minima
     )
-    if not isinstance(motor, pd.DataFrame) or motor.empty:
+    if not isinstance(motor,pd.DataFrame) or motor.empty:
         return motor
 
-    # Reanexa por índice, preservando a ordem/filtragem do motor.
-    real_m = real.reindex(motor.index)
+    final_m = final.reindex(motor.index)
     ref_m = ref.reindex(motor.index)
     calc_m = calc.reindex(motor.index)
+    fonte_m = d.get(
+        "Fonte_Preço_Eirox",
+        pd.Series("SEM PREÇO",index=d.index)
+    ).reindex(motor.index)
 
-    motor["Preço_Atual_Eirox"] = real_m
+    motor["Preço_Atual_Eirox"] = final_m
     motor["Preço_Referencia_Calculo_Eirox"] = ref_m
     motor["Preço_Base_Calculo_Eirox"] = calc_m
-    motor["Fonte_Preço_Eirox"] = np.where(
-        real_m.notna() & (real_m > 0),
-        "ÚLTIMA VENDA",
-        np.where(ref_m.notna() & (ref_m > 0), "REFERÊNCIA MENSAL", "SEM PREÇO")
-    )
+    motor["Fonte_Preço_Eirox"] = fonte_m.fillna("SEM PREÇO")
     return motor
+
 
 
 
@@ -19574,36 +19751,34 @@ def eirox_v147_corrigir_lista_subir_final(tab):
                         out.at[idx, "Custo Unitário"] = _eirox_moeda_num(cu_calc)
 
 
-    # V1.4.45 — barreira visual final: Preço Atual e Flag vêm diretamente
-    # da última Data Emissão do Principal na VENDA_TESTE.
+    # V1.4.46 — barreira visual final com prioridade VENDA_TESTE e
+    # fallback VENDA_FINAL_TESTE do último mês fechado (Venda / Itens).
     try:
-        _ult = eirox_v143_ultima_pesquisa()
-        if isinstance(_ult, pd.DataFrame) and not _ult.empty and "EAN" in out.columns:
-            _lk = _ult.drop_duplicates("EAN", keep="last").set_index("EAN")
+        _mapa = eirox_v146_preco_principal()
+        if isinstance(_mapa, pd.DataFrame) and not _mapa.empty and "EAN" in out.columns:
+            _lk = _mapa.drop_duplicates("EAN", keep="last").set_index("EAN")
             _keys = _ean(out["EAN"])
-            _real = _keys.map(_lk["Preco_Ultima_Venda"])
-            _data_real = _keys.map(_lk["Data_Ultima_Venda"])
-            if "Preço Atual" not in out.columns:
-                out["Preço Atual"] = ""
+            _preco = _keys.map(_lk["Preco_Principal_Final"])
+            _fonte = _keys.map(_lk["Fonte_Preco_Principal"]).fillna("SEM PREÇO")
+            _data = _keys.map(_lk["Data_Ultima_Venda"])
+            _mes = _keys.map(_lk["Mes_Fechado_Referencia"])
+
             out["Preço Atual"] = [
                 _eirox_moeda_num(v) if pd.notna(v) and float(v) > 0 else ""
-                for v in _real
+                for v in _preco
             ]
-            if "Flag Preço" not in out.columns:
-                out["Flag Preço"] = ""
-            _ref_col = "Preço Ref. Cálculo" if "Preço Ref. Cálculo" in out.columns else None
-            _ref_ok = (
-                out[_ref_col].apply(_num).gt(0)
-                if _ref_col else pd.Series(False, index=out.index)
-            )
-            out["Flag Preço"] = np.where(
-                _real.notna() & (_real > 0),
-                "✅ ÚLTIMA VENDA",
-                np.where(_ref_ok, "⚠️ REFERÊNCIA MENSAL", "⚠️ SEM PREÇO")
-            )
+            out["Flag Preço"] = _fonte.map({
+                "ÚLTIMA VENDA": "✅ ÚLTIMA VENDA",
+                "ÚLTIMO MÊS FECHADO": "🟡 ÚLTIMO MÊS FECHADO",
+                "SEM PREÇO": "⚠️ SEM PREÇO"
+            }).fillna("⚠️ SEM PREÇO")
             out["Data Última Venda"] = [
                 v.strftime("%d/%m/%Y %H:%M:%S") if pd.notna(v) else ""
-                for v in _data_real
+                for v in _data
+            ]
+            out["Mês Ref. Venda"] = [
+                str(v) if pd.notna(v) and str(v).lower() not in ("nan","nat","none") else ""
+                for v in _mes
             ]
     except Exception:
         pass
