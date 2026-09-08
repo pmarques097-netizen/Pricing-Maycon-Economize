@@ -3300,15 +3300,144 @@ def mapa_custo_unitario_estoque_teste(estoque_base):
 
 
 
+def eirox_v167_mapa_custo_compra(compra_base):
+    """
+    Fallback oficial 2: custo unitário cadastrado em COMPRA_TESTE por EAN.
+    Preserva a regra histórica do projeto: média dos custos válidos por EAN.
+    """
+    try:
+        if not isinstance(compra_base, pd.DataFrame) or compra_base.empty:
+            return pd.DataFrame(columns=["EAN_JOIN_CUSTO","Custo_Compra_Unitario"])
+
+        c = compra_base.copy()
+        ce = eirox_coluna_generica(
+            c, ["EAN","EAN (GTIN)","GTIN","Código de Barras","Codigo de Barras","codigobarras","Barras"]
+        )
+        cc = eirox_coluna_generica(
+            c, ["Custo","Custo Unitário","Custo_Unitario","Custo Unitario","Preço Compra","Preco Compra","Custo Atual"]
+        )
+        if not ce or not cc:
+            return pd.DataFrame(columns=["EAN_JOIN_CUSTO","Custo_Compra_Unitario"])
+
+        c["EAN_JOIN_CUSTO"] = c[ce].apply(
+            lambda x: re.sub(r"\D","",str(x).replace(".0",""))
+        )
+        c["__CUSTO_COMPRA_V167"] = c[cc].apply(eirox_numero_br_para_float)
+        c = c[
+            c["EAN_JOIN_CUSTO"].astype(str).str.len().gt(0)
+            & c["__CUSTO_COMPRA_V167"].notna()
+            & c["__CUSTO_COMPRA_V167"].gt(0)
+        ].copy()
+        if c.empty:
+            return pd.DataFrame(columns=["EAN_JOIN_CUSTO","Custo_Compra_Unitario"])
+
+        out = (
+            c.groupby("EAN_JOIN_CUSTO",as_index=False)["__CUSTO_COMPRA_V167"]
+            .mean()
+            .rename(columns={"__CUSTO_COMPRA_V167":"Custo_Compra_Unitario"})
+        )
+        return out
+    except Exception:
+        return pd.DataFrame(columns=["EAN_JOIN_CUSTO","Custo_Compra_Unitario"])
+
+
+def eirox_v167_mapa_custo_venda_fechada(venda_base):
+    """
+    Fallback oficial 3: custo unitário do último mês fechado com venda por EAN.
+
+    Custo unitário = Custo total / Itens do próprio mês fechado.
+    """
+    try:
+        if not isinstance(venda_base, pd.DataFrame) or venda_base.empty:
+            return pd.DataFrame(columns=["EAN_JOIN_CUSTO","Custo_Venda_Fechada_Unitario","Mes_Custo_Venda"])
+
+        v = venda_base.copy()
+        ce = eirox_coluna_generica(
+            v, ["EAN","EAN (GTIN)","GTIN","Cód. Barras/Etiq.","Cod. Barras/Etiq.","Código de Barras","Codigo de Barras","Barras"]
+        )
+        cq = eirox_coluna_generica(
+            v, ["Itens","Quantidade","Qtd","Qtde","Unidades"]
+        )
+        cc = eirox_coluna_generica(
+            v, ["Custo","Custo Total","CMV","Valor Custo"]
+        )
+        cm = eirox_coluna_generica(
+            v, ["Ano-mês","Ano-mes","Ano mês","Ano mes","Competência","Competencia","Mês","Mes","Data"]
+        )
+        if not ce or not cq or not cc or not cm:
+            return pd.DataFrame(columns=["EAN_JOIN_CUSTO","Custo_Venda_Fechada_Unitario","Mes_Custo_Venda"])
+
+        v["EAN_JOIN_CUSTO"] = v[ce].apply(
+            lambda x: re.sub(r"\D","",str(x).replace(".0",""))
+        )
+        v["__ITENS_V167"] = v[cq].apply(eirox_numero_br_para_float)
+        v["__CUSTO_TOTAL_V167"] = v[cc].apply(eirox_numero_br_para_float)
+
+        def _comp_v167(x):
+            if pd.isna(x):
+                return pd.NaT
+            t = str(x).strip()
+            if re.fullmatch(r"\d{6}", t):
+                try:
+                    return pd.Timestamp(year=int(t[:4]), month=int(t[4:6]), day=1)
+                except Exception:
+                    return pd.NaT
+            d = pd.to_datetime(x, errors="coerce", dayfirst=True)
+            if pd.isna(d):
+                m = re.search(r"(20\d{2})\D?([01]?\d)", t)
+                if m:
+                    try:
+                        return pd.Timestamp(year=int(m.group(1)), month=int(m.group(2)), day=1)
+                    except Exception:
+                        return pd.NaT
+            return pd.Timestamp(year=d.year, month=d.month, day=1) if pd.notna(d) else pd.NaT
+
+        v["__MES_V167"] = v[cm].apply(_comp_v167)
+        atual = pd.Timestamp.now()
+        mes_atual = pd.Timestamp(year=atual.year,month=atual.month,day=1)
+
+        v = v[
+            v["EAN_JOIN_CUSTO"].astype(str).str.len().gt(0)
+            & v["__MES_V167"].notna()
+            & v["__MES_V167"].lt(mes_atual)
+            & v["__ITENS_V167"].fillna(0).gt(0)
+            & v["__CUSTO_TOTAL_V167"].fillna(0).gt(0)
+        ].copy()
+        if v.empty:
+            return pd.DataFrame(columns=["EAN_JOIN_CUSTO","Custo_Venda_Fechada_Unitario","Mes_Custo_Venda"])
+
+        agg = v.groupby(["EAN_JOIN_CUSTO","__MES_V167"],as_index=False).agg(
+            Itens=("__ITENS_V167","sum"),
+            Custo_Total=("__CUSTO_TOTAL_V167","sum"),
+        )
+        agg["Custo_Venda_Fechada_Unitario"] = np.where(
+            agg["Itens"].gt(0),
+            agg["Custo_Total"] / agg["Itens"],
+            np.nan
+        )
+        agg = agg[
+            agg["Custo_Venda_Fechada_Unitario"].notna()
+            & agg["Custo_Venda_Fechada_Unitario"].gt(0)
+        ].copy()
+        if agg.empty:
+            return pd.DataFrame(columns=["EAN_JOIN_CUSTO","Custo_Venda_Fechada_Unitario","Mes_Custo_Venda"])
+
+        agg = agg.sort_values(["EAN_JOIN_CUSTO","__MES_V167"])
+        agg = agg.drop_duplicates("EAN_JOIN_CUSTO",keep="last")
+        agg["Mes_Custo_Venda"] = agg["__MES_V167"].dt.strftime("%Y-%m")
+        return agg[["EAN_JOIN_CUSTO","Custo_Venda_Fechada_Unitario","Mes_Custo_Venda"]]
+    except Exception:
+        return pd.DataFrame(columns=["EAN_JOIN_CUSTO","Custo_Venda_Fechada_Unitario","Mes_Custo_Venda"])
+
 def aplicar_custo_oficial_estoque_teste(df_base, estoque_base=None):
     """
-    V1.4.66 — aplica a fonte única oficial de custo e registra auditoria.
+    V1.4.68 — hierarquia oficial de custo por EAN, sem COMPRA_TESTE.
 
-    Custo = soma(Custo Médio do ESTOQUE_TESTE) / soma(Estoque do ESTOQUE_TESTE)
-    por EAN.
+    1) ESTOQUE_TESTE: Custo Médio total / Estoque total.
+    2) VENDA_FINAL_TESTE: Custo total / Itens do último mês fechado com venda.
 
-    Não usa custo antigo como fallback silencioso. Quando o custo oficial não
-    puder ser calculado, registra o motivo em Motivo_Sem_Custo.
+    COMPRA_TESTE não participa mais do custo porque deixou de ser alimentada.
+    Nenhum valor é inventado. A fonte escolhida fica registrada em Fonte_Custo.
     """
     try:
         if not isinstance(df_base, pd.DataFrame) or df_base.empty:
@@ -3316,95 +3445,123 @@ def aplicar_custo_oficial_estoque_teste(df_base, estoque_base=None):
 
         df = df_base.copy()
 
-        # Mantém o custo anterior somente para auditoria; ele não alimenta o motor.
         if "Custo" in df.columns:
-            df["Custo_Anterior_Auditoria"] = pd.to_numeric(
-                df["Custo"], errors="coerce"
-            )
+            df["Custo_Anterior_Auditoria"] = pd.to_numeric(df["Custo"], errors="coerce")
         else:
             df["Custo_Anterior_Auditoria"] = np.nan
 
         col_ean = eirox_coluna_generica(
             df,
-            ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras",
-             "Codigo de Barras", "codigobarras"]
+            ["EAN","EAN (GTIN)","GTIN","Código de Barras",
+             "Codigo de Barras","codigobarras"]
         )
-
         if not col_ean:
             df["Custo"] = np.nan
             df["Fonte_Custo"] = ""
             df["Motivo_Sem_Custo"] = "EAN AUSENTE NA BASE DE PRICING"
-            df["Estoque_Base_Custo"] = np.nan
-            df["Custo_Medio_Total_Base"] = np.nan
             return df
 
         df["EAN_JOIN_CUSTO"] = df[col_ean].apply(
-            lambda x: re.sub(r"\D", "", str(x).replace(".0", ""))
+            lambda x: re.sub(r"\D","",str(x).replace(".0",""))
         )
 
-        mapa = mapa_custo_unitario_estoque_teste(estoque_base)
-        if not isinstance(mapa, pd.DataFrame) or mapa.empty:
-            df["Custo"] = np.nan
-            df["Fonte_Custo"] = ""
-            df["Motivo_Sem_Custo"] = "BASE DE ESTOQUE SEM DADOS DE CUSTO UTILIZÁVEIS"
-            df["Estoque_Base_Custo"] = np.nan
+        # Fonte 1 — estoque atual.
+        mapa_est = mapa_custo_unitario_estoque_teste(estoque_base)
+        if isinstance(mapa_est, pd.DataFrame) and not mapa_est.empty:
+            mapa_est = mapa_est.drop_duplicates("EAN_JOIN_CUSTO", keep="last")
+            df = df.merge(mapa_est, on="EAN_JOIN_CUSTO", how="left")
+        else:
+            df["Custo_Estoque_Unitario"] = np.nan
             df["Custo_Medio_Total_Base"] = np.nan
-            df.drop(columns=["EAN_JOIN_CUSTO"], inplace=True, errors="ignore")
-            return df
+            df["Estoque_Total_Base"] = np.nan
+            df["Motivo_Sem_Custo"] = ""
+            df["Fonte_Custo_Oficial"] = ""
 
-        mapa = mapa.drop_duplicates("EAN_JOIN_CUSTO", keep="last")
-        df = df.merge(mapa, on="EAN_JOIN_CUSTO", how="left")
+        # Fonte 2 — último mês fechado da venda.
+        mapa_venda = eirox_v167_mapa_custo_venda_fechada(
+            globals().get("venda_rede", pd.DataFrame())
+        )
+        if isinstance(mapa_venda, pd.DataFrame) and not mapa_venda.empty:
+            df = df.merge(
+                mapa_venda.drop_duplicates("EAN_JOIN_CUSTO", keep="last"),
+                on="EAN_JOIN_CUSTO",
+                how="left"
+            )
+        else:
+            df["Custo_Venda_Fechada_Unitario"] = np.nan
+            df["Mes_Custo_Venda"] = ""
 
-        custo_oficial = pd.to_numeric(
-            df["Custo_Estoque_Unitario"], errors="coerce"
+        c_est = pd.to_numeric(
+            df.get("Custo_Estoque_Unitario", np.nan),
+            errors="coerce"
         )
-        df["Custo"] = custo_oficial.where(
-            custo_oficial.notna() & custo_oficial.gt(0),
-            np.nan
-        )
-
-        df["Fonte_Custo"] = df["Fonte_Custo_Oficial"].fillna("").astype(str)
-        df["Estoque_Base_Custo"] = pd.to_numeric(
-            df["Estoque_Total_Base"], errors="coerce"
-        )
-        df["Custo_Medio_Total_Base"] = pd.to_numeric(
-            df["Custo_Medio_Total_Base"], errors="coerce"
+        c_vnd = pd.to_numeric(
+            df.get("Custo_Venda_Fechada_Unitario", np.nan),
+            errors="coerce"
         )
 
-        motivo = df["Motivo_Sem_Custo"].fillna("").astype(str)
-        nao_encontrado = (
-            df["EAN_JOIN_CUSTO"].astype(str).str.len().gt(0)
-            & motivo.eq("")
-            & custo_oficial.isna()
-        )
-        motivo.loc[nao_encontrado] = "EAN NÃO ENCONTRADO NO ESTOQUE_TESTE"
+        custo = c_est.where(c_est.gt(0))
+        custo = custo.combine_first(c_vnd.where(c_vnd.gt(0)))
+        df["Custo"] = custo
+
+        fonte = pd.Series("", index=df.index, dtype=object)
+        fonte.loc[c_est.gt(0)] = "ESTOQUE_TESTE — CUSTO MÉDIO / ESTOQUE"
+        fonte.loc[~c_est.gt(0) & c_vnd.gt(0)] = "VENDA_FINAL_TESTE — ÚLTIMO MÊS FECHADO"
+        df["Fonte_Custo"] = fonte
+
+        # Diagnóstico final: só é SEM CUSTO se as duas fontes falharem.
+        motivo_est = df.get(
+            "Motivo_Sem_Custo",
+            pd.Series("", index=df.index)
+        ).fillna("").astype(str)
+
+        motivo = pd.Series("", index=df.index, dtype=object)
+        ok = custo.notna() & custo.gt(0)
+        motivo.loc[ok] = "CUSTO LOCALIZADO"
+
+        sem = ~ok
+        ean_vazio = df["EAN_JOIN_CUSTO"].astype(str).str.len().eq(0)
+        motivo.loc[sem & ean_vazio] = "EAN INVÁLIDO"
+
         motivo.loc[
-            custo_oficial.notna() & custo_oficial.gt(0)
-        ] = "CUSTO OFICIAL CALCULADO"
+            sem & ~ean_vazio
+            & c_est.isna()
+            & c_vnd.isna()
+        ] = "EAN SEM CUSTO NAS 2 FONTES"
+
+        # Preserva razão técnica do estoque quando ela é mais específica.
+        espec = sem & motivo_est.ne("") & ~motivo_est.eq("CUSTO OFICIAL CALCULADO")
+        motivo.loc[espec & motivo.eq("")] = motivo_est.loc[espec]
+
+        motivo.loc[sem & motivo.eq("")] = "CUSTO NÃO LOCALIZADO"
         df["Motivo_Sem_Custo"] = motivo
 
-        # Recalcula lucro/margem somente com custo oficial.
+        df["Estoque_Base_Custo"] = pd.to_numeric(
+            df.get("Estoque_Total_Base", np.nan),
+            errors="coerce"
+        )
+
+        # Recalcula lucro e margem usando apenas as duas fontes oficiais.
         preco = None
         for c in [
-            "Preco_Atual", "Preço Atual", "Preco Atual", "Preço_Atual",
-            "Preco_Ultima_Venda", "Preço Última Venda"
+            "Preco_Atual","Preço Atual","Preco Atual","Preço_Atual",
+            "Preco_Ultima_Venda","Preço Última Venda"
         ]:
             if c in df.columns:
-                candidato = pd.to_numeric(df[c], errors="coerce")
-                if candidato.notna().any():
-                    preco = candidato
+                s = pd.to_numeric(df[c], errors="coerce")
+                if s.notna().any():
+                    preco = s
                     break
 
         if preco is not None:
-            custo_num = pd.to_numeric(df["Custo"], errors="coerce")
             df["Lucro_Unitario"] = np.where(
-                preco.gt(0) & custo_num.notna() & custo_num.gt(0),
-                preco - custo_num,
+                preco.gt(0) & custo.gt(0),
+                preco - custo,
                 np.nan
             )
             df["Lucro Unitário"] = df["Lucro_Unitario"]
             df["Margem_%"] = np.where(
-                preco.gt(0) & custo_num.notna() & custo_num.gt(0),
+                preco.gt(0) & custo.gt(0),
                 df["Lucro_Unitario"] / preco,
                 np.nan
             )
@@ -3415,6 +3572,7 @@ def aplicar_custo_oficial_estoque_teste(df_base, estoque_base=None):
                 "Custo_Estoque_Unitario",
                 "Fonte_Custo_Oficial",
                 "Estoque_Total_Base",
+                "Custo_Compra_Unitario",
             ],
             inplace=True,
             errors="ignore"
@@ -3423,6 +3581,8 @@ def aplicar_custo_oficial_estoque_teste(df_base, estoque_base=None):
 
     except Exception:
         return df_base
+
+
 
 
 
