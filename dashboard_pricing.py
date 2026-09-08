@@ -7965,6 +7965,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
         return df_pesquisa
 
 
+# V1.4.69 — PERFORMANCE DE TRANSIÇÃO: caches pesados em RAM; cópias só nas fronteiras de uso.
 VERSAO_APP = "Enterprise v1.4.47"
 
 # --------------------------------------------------
@@ -16342,7 +16343,7 @@ def eirox_preprocessar_historico_cacheado(
     return out
 
 
-@st.cache_data(show_spinner=False, max_entries=12)
+@st.cache_resource(show_spinner=False, max_entries=24)
 def eirox_classificar_base_cacheada(
     tipo_base,
     assinatura_base,
@@ -16367,7 +16368,7 @@ def eirox_recalcular_ganho_cacheado(
     return recalcular_ganho_inteligente(_df_base, _venda_rede_base, _historico_base)
 
 
-@st.cache_data(show_spinner=False, max_entries=24)
+@st.cache_resource(show_spinner=False, max_entries=32)
 def eirox_pipeline_municipio_cacheado(
     municipio,
     assinatura_master,
@@ -16389,7 +16390,7 @@ def eirox_pipeline_municipio_cacheado(
     )
 
 
-@st.cache_data(show_spinner=False, max_entries=32)
+@st.cache_resource(show_spinner=False, max_entries=48)
 def eirox_menor_preco_cacheado(
     chave_filtros,
     assinatura_historico,
@@ -16455,7 +16456,8 @@ eirox_limpar_cache_persistente_antigo()
 # --------------------------------------------------
 # CACHE PERSISTENTE DE ENTRADA - V1.4.36
 # --------------------------------------------------
-def eirox_carregar_base_persistente(rotulo, assinatura, loader):
+@st.cache_resource(show_spinner=False, max_entries=16)
+def eirox_carregar_base_persistente(rotulo, assinatura, _loader):
     """Evita reler Excel/CSV a cada nova sessão quando os arquivos não mudaram."""
     pasta = Path(__file__).resolve().parent / "_cache_pricing"
     pasta.mkdir(parents=True, exist_ok=True)
@@ -16471,7 +16473,7 @@ def eirox_carregar_base_persistente(rotulo, assinatura, loader):
             arq.unlink(missing_ok=True)
         except Exception:
             pass
-    obj = loader()
+    obj = _loader()
     try:
         if isinstance(obj, pd.DataFrame):
             obj.to_pickle(arq)
@@ -16507,7 +16509,7 @@ def carregar():
     except Exception:
         return pd.DataFrame()
 
-historico = eirox_carregar_base_persistente("historico", _eirox_sig_historico, carregar_historico)
+historico = eirox_carregar_base_persistente("historico", _eirox_sig_historico, carregar_historico).copy(deep=True)
 # V1.4.45 — guarda o estado REAL da primeira carga. No Streamlit Cloud,
 # arquivos .xls podem não ser lidos pelo loader primário e só entram pelos
 # fallbacks de compatibilidade abaixo. O motor mestre precisa ser reconstruído
@@ -16533,17 +16535,17 @@ try:
 except Exception:
     pass
 
-compra = eirox_carregar_base_persistente("compra", _eirox_sig_compra, carregar_compra)
+compra = eirox_carregar_base_persistente("compra", _eirox_sig_compra, carregar_compra).copy(deep=True)
 _eirox_primeira_compra_vazia = not isinstance(compra, pd.DataFrame) or compra.empty
 compra = eirox_classificar_base_cacheada(
     "Compra", _eirox_sig_compra, _eirox_sig_contexto, compra
 )
-venda_rede = eirox_carregar_base_persistente("venda", _eirox_sig_venda, carregar_venda_rede)
+venda_rede = eirox_carregar_base_persistente("venda", _eirox_sig_venda, carregar_venda_rede).copy(deep=True)
 _eirox_primeira_venda_vazia = not isinstance(venda_rede, pd.DataFrame) or venda_rede.empty
 venda_rede = eirox_classificar_base_cacheada(
     "Venda", _eirox_sig_venda, _eirox_sig_contexto, venda_rede
 )
-estoque = eirox_carregar_base_persistente("estoque", _eirox_sig_estoque, carregar_estoque)
+estoque = eirox_carregar_base_persistente("estoque", _eirox_sig_estoque, carregar_estoque).copy(deep=True)
 _eirox_primeira_estoque_vazia = not isinstance(estoque, pd.DataFrame) or estoque.empty
 estoque = eirox_classificar_base_cacheada(
     "Estoque", _eirox_sig_estoque, _eirox_sig_contexto, estoque
@@ -17503,7 +17505,7 @@ df_filtrado = eirox_pipeline_municipio_cacheado(
     _compra_contexto_municipio,
     _estoque_contexto_municipio,
     _venda_contexto_municipio,
-)
+).copy(deep=True)
 
 eirox_render_alertas_premium(df_filtrado)
 
@@ -17574,7 +17576,7 @@ df_filtrado = eirox_menor_preco_cacheado(
     _eirox_sig_contexto,
     df_filtrado,
     historico if "historico" in globals() else None,
-)
+).copy(deep=True)
 
 
 # --------------------------------------------------
@@ -17722,7 +17724,7 @@ def eirox_v1413_enriquecer_venda_compra(base, simulacao_ref=None, compra_ref=Non
             return base
 
 
-@st.cache_data(show_spinner=False, max_entries=32)
+@st.cache_resource(show_spinner=False, max_entries=48)
 def eirox_v1430_enriquecer_venda_compra_cacheado(
     chave_filtros,
     assinatura_master,
@@ -17748,7 +17750,7 @@ df_filtrado = eirox_v1430_enriquecer_venda_compra_cacheado(
     df_filtrado,
     simulacao_global if "simulacao_global" in globals() else None,
     _compra_contexto_municipio if "_compra_contexto_municipio" in globals() else (compra if "compra" in globals() else None),
-)
+).copy(deep=True)
 
 
 
