@@ -941,99 +941,57 @@ def garantir_colunas_padrao_dashboard(df_base):
 
 
 
+
 def eirox_ultima_venda_por_ean(venda, ean_col, qtd_col=None, preco_col=None, valor_total_col=None):
-    """Regra global V1.4.38: preço do Principal = última venda por data/hora.
-
-    A quantidade continua agregada por EAN para métricas de volume, porém o
-    preço de referência nunca é média. Se houver preço unitário na venda, usa
-    o preço da linha mais recente. Se houver apenas valor total + quantidade,
-    calcula o unitário da linha mais recente. Em empate/ausência de data,
-    preserva a última ocorrência física da fonte.
-    """
-    if not isinstance(venda, pd.DataFrame) or venda.empty or not ean_col or ean_col not in venda.columns:
-        return pd.DataFrame(columns=["EAN", "Preco_Ultima_Venda", "Data_Ultima_Venda"])
-
-    v = venda.copy()
-    v["EAN"] = (
-        v[ean_col].astype(str)
-        .str.replace(".0", "", regex=False)
-        .str.replace(r"\D", "", regex=True)
-        .str.strip()
-    )
-    v["_ORDEM_ULT_VENDA"] = range(len(v))
-
-    # Procura a data/hora real da venda com prioridade para campos específicos.
-    data_col = None
-    candidatos_data = [
-        "Data Hora Venda", "Data/Hora Venda", "DataHora Venda", "DataHoraVenda",
-        "Data da Venda", "Data Venda", "Data_Venda", "Data Movimento",
-        "Data do Movimento", "DataHora", "Data Hora", "Data_Hora",
-        "Data Emissão", "Data Emissao", "Data da Pesquisa", "Data Pesquisa",
-        "Data", "DATA"
-    ]
-    mapa_cols = {str(c).strip().casefold(): c for c in v.columns}
-    for nome in candidatos_data:
-        c = mapa_cols.get(nome.casefold())
-        if c is not None:
-            data_col = c
-            break
+    """Última venda transacional válida; nunca usa média ou fechamento mensal."""
+    cols = ["EAN", "Preco_Ultima_Venda", "Data_Ultima_Venda"]
+    vazio = pd.DataFrame(columns=cols)
+    if not isinstance(venda, pd.DataFrame) or venda.empty or ean_col not in venda.columns:
+        return vazio
+    import unicodedata
+    def norm(x):
+        return "".join(ch for ch in unicodedata.normalize("NFKD", str(x).casefold())
+                       if not unicodedata.combining(ch)).replace("_", " ").strip()
+    mapa = {norm(k): k for k in venda.columns}
+    def achar(nomes):
+        return next((mapa[norm(n)] for n in nomes if norm(n) in mapa), None)
+    data_col = achar(["Data Hora Venda", "Data/Hora Venda", "DataHoraVenda",
+                      "Data da Venda", "Data Venda", "Data_Venda",
+                      "DataHoraFechamento", "Data Hora Fechamento",
+                      "DataHoraMovimento", "Data Hora Movimento",
+                      "DataHora", "Data Hora", "Data_Hora"])
+    # Data de pesquisa, emissão fiscal e competência mensal não são timestamps
+    # de venda. Não inferir a última transação a partir deles.
     if data_col is None:
-        for c in v.columns:
-            n = str(c).strip().casefold()
-            if "data" in n or "date" in n:
-                data_col = c
-                break
-
-    if data_col is not None:
-        s = v[data_col].fillna("").astype(str).str.strip()
-        s = s.str.replace(
-            r"\s+(AMT|AMST|BRT|BRST|GMT(?:[+-]\d+)?|UTC(?:[+-]\d+)?)\s+",
-            " ", regex=True, flags=re.IGNORECASE
-        )
-        try:
-            dt = pd.to_datetime(s, errors="coerce", dayfirst=True, format="mixed")
-        except Exception:
-            dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
-        v["_DATA_ULT_VENDA"] = dt
-    else:
-        v["_DATA_ULT_VENDA"] = pd.NaT
-
-    # Calcula o preço unitário de CADA ocorrência antes de escolher a última.
-    v["_PRECO_UNIT_ULT_VENDA"] = np.nan
-    if preco_col and preco_col in v.columns:
-        try:
-            v["_PRECO_UNIT_ULT_VENDA"] = converter_numero_brasil(v[preco_col])
-        except Exception:
-            v["_PRECO_UNIT_ULT_VENDA"] = pd.to_numeric(v[preco_col], errors="coerce")
-    elif valor_total_col and valor_total_col in v.columns and qtd_col and qtd_col in v.columns:
-        try:
-            total = converter_numero_brasil(v[valor_total_col])
-            qtd = converter_numero_brasil(v[qtd_col])
-        except Exception:
-            total = pd.to_numeric(v[valor_total_col], errors="coerce")
-            qtd = pd.to_numeric(v[qtd_col], errors="coerce")
-        v["_PRECO_UNIT_ULT_VENDA"] = total / qtd.replace(0, np.nan)
-
-    v = v[
-        v["EAN"].ne("") &
-        pd.to_numeric(v["_PRECO_UNIT_ULT_VENDA"], errors="coerce").notna() &
-        (pd.to_numeric(v["_PRECO_UNIT_ULT_VENDA"], errors="coerce") > 0)
-    ].copy()
+        return vazio
+    preco_real = achar(["Preco Unitario Liquido", "Preço Unitário Líquido",
+                        "Valor Unitario Liquido", "Valor Unitário Líquido",
+                        "Preco Liquido Unitario", "Preço Líquido Unitário",
+                        "Preco Venda Liquido", "Preço Venda Líquido",
+                        "Preco_Unitario_Efetivo", "Preco_Unitario_Liquido",
+                        "Preco_Unitario", "Preço Unitário", "Preco Unitario",
+                        "Valor Unitário", "Valor Unitario", "Preço Venda",
+                        "Preco Venda", "Preço (R$)", "Preco (R$)"])
+    if preco_real is None:
+        return vazio
+    v = venda.copy()
+    v["EAN"] = v[ean_col].astype(str).str.replace(r"\\.0$", "", regex=True).str.replace(r"\\D", "", regex=True)
+    v["_ORDEM_ULT_VENDA"] = range(len(v))
+    s = v[data_col].astype(str).str.strip()
+    s = s.str.replace(r"\\s+(AMT|AMST|BRT|BRST|GMT(?:[+-]\\d+)?|UTC(?:[+-]\\d+)?)\\s+", " ", regex=True, flags=re.IGNORECASE)
+    v["_DATA_ULT_VENDA"] = pd.to_datetime(s, errors="coerce", dayfirst=True, format="mixed")
+    v["_PRECO_UNIT_ULT_VENDA"] = converter_numero_brasil(v[preco_real])
+    # A última venda é escolhida ANTES de verificar o preço. Uma ocorrência
+    # recente sem preço não pode ser substituída silenciosamente por outra antiga.
+    v = v[v["EAN"].ne("") & v["_DATA_ULT_VENDA"].notna()].copy()
     if v.empty:
-        return pd.DataFrame(columns=["EAN", "Preco_Ultima_Venda", "Data_Ultima_Venda"])
-
-    v["_DATA_ORD_ULT_VENDA"] = v["_DATA_ULT_VENDA"].fillna(pd.Timestamp.min)
-    ult = (
-        v.sort_values(["EAN", "_DATA_ORD_ULT_VENDA", "_ORDEM_ULT_VENDA"], kind="stable")
-         .groupby("EAN", as_index=False, dropna=False)
-         .tail(1)
-         .copy()
-    )
-    ult = ult[["EAN", "_PRECO_UNIT_ULT_VENDA", "_DATA_ULT_VENDA"]].rename(columns={
+        return vazio
+    v = v.sort_values(["EAN", "_DATA_ULT_VENDA", "_ORDEM_ULT_VENDA"], kind="stable").groupby("EAN", dropna=False).tail(1)
+    v["_PRECO_UNIT_ULT_VENDA"] = v["_PRECO_UNIT_ULT_VENDA"].where(v["_PRECO_UNIT_ULT_VENDA"].gt(0))
+    return v[["EAN", "_PRECO_UNIT_ULT_VENDA", "_DATA_ULT_VENDA"]].rename(columns={
         "_PRECO_UNIT_ULT_VENDA": "Preco_Ultima_Venda",
-        "_DATA_ULT_VENDA": "Data_Ultima_Venda",
-    })
-    return ult.reset_index(drop=True)
+        "_DATA_ULT_VENDA": "Data_Ultima_Venda"
+    }).reset_index(drop=True)
 
 
 def construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque):
@@ -1151,7 +1109,7 @@ def construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque
             agg = agg.merge(est, on="EAN", how="left")
 
         agg["Preco_Atual"] = agg["Preco_Atual_Venda"] if "Preco_Atual_Venda" in agg.columns else np.nan
-        agg["Preco_Atual"] = agg["Preco_Atual"].fillna(agg["Preco_Medio"])
+        # Nunca completar o preço do Principal com média de mercado.
 
         if "Custo" not in agg.columns:
             agg["Custo"] = np.nan
@@ -5380,7 +5338,7 @@ def eirox_base_cliente_produtos_para_comparacao(df_produtos, cliente_nome="Clien
 
         # Preço principal vem da base interna / simulador / preço atual.
         preco_col = None
-        for c in ["Preco_Atual", "Preço Atual", "Preco Atual", "Preço_Atual", "Preco_Medio", "Preço Médio"]:
+        for c in ["Preco_Atual", "Preço Atual", "Preco Atual", "Preço_Atual"]:
             if c in base.columns:
                 preco_col = c
                 break
@@ -5401,7 +5359,7 @@ def eirox_base_cliente_produtos_para_comparacao(df_produtos, cliente_nome="Clien
             .groupby("EAN", as_index=False)
             .agg(
                 Produto_Pesquisa=(produto_col, "first") if produto_col else ("EAN", "first"),
-                Preco_Selecionado=("_PRECO_PRINCIPAL_COMP", "mean"),
+                Preco_Selecionado=("_PRECO_PRINCIPAL_COMP", "first"),
                 Qtd_Pesquisas_Selecionado=("_PRECO_PRINCIPAL_COMP", "count")
             )
         )
@@ -5498,9 +5456,7 @@ def aplicar_engine_recomendacoes_restaurada(df_base):
                 "Preco Atual",
                 "Preço_Atual",
                 "Preco_Selecionado",
-                "Preço Principal",
-                "Preco_Medio",
-                "Preço Médio"
+                "Preço Principal"
             ],
             0
         )
@@ -5702,9 +5658,7 @@ def aplicar_engine_recomendacoes_restaurada(df_base):
                 "Preço_Atual",
                 "Preco_Selecionado",
                 "Preço Principal",
-                "Preco_Principal",
-                "Preco_Medio",
-                "Preço Médio"
+                "Preco_Principal"
             ],
             0
         )
@@ -8690,10 +8644,8 @@ def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
         ["data", "dt"]
     )
 
-    # Em bases tipo VENDA_FINAL_TESTE, a coluna "Venda" é total e "Itens" é quantidade.
-    # Quando existir Venda + Itens, usar essa combinação para preço atual.
-    if col_valor_total and col_qtd:
-        col_preco_venda = None
+    # REGRA V1.4.39: Venda + Itens são totais agregados e NÃO formam Preço Atual.
+    # Só uma coluna unitária explícita, acompanhada de data/hora, pode alimentar o Principal.
 
     if (
         not col_ean_venda
@@ -12928,7 +12880,7 @@ def adicionar_recomendacoes_ao_workflow(recomendacoes_df, origem="IA Pricing"):
             ean = str(row.get("EAN", ""))
             produto = str(row.get("Produto", ""))
             acao = str(row.get("Ação", row.get("Tipo_Oportunidade", "")))
-            preco_atual = str(row.get("Preço_Atual", row.get("Preco_Medio", "")))
+            preco_atual = str(row.get("Preço_Atual", row.get("Preco_Atual", "")))
             preco_rec = str(row.get("Preço_Recomendado", row.get("Preco_Recomendado", "")))
             ganho = str(row.get("Ganho_Estimado", row.get("Ganho_Potencial", "")))
 
@@ -17298,11 +17250,11 @@ def eirox_v135_corrigir_financeiro_subir_preco(df):
     qtd_por_proj = venda_projetada / preco_sugerido.replace(0, np.nan)
     qtd = qtd.where(qtd.notna() & (qtd > 0), qtd_por_proj)
 
-    # 3) Com a quantidade recuperada, Venda Preço Antigo / Qtd recupera Preço Atual.
-    calc_preco_por_venda = venda_antiga / qtd.replace(0, np.nan)
-    preco_atual = preco_atual.where(preco_atual.notna() & (preco_atual > 0), calc_preco_por_venda)
+    # 3) REGRA V1.4.39: NÃO recuperar Preço Atual por Venda/Quantidade.
+    # Essa divisão produz preço médio ponderado e pode criar valores que nunca foram praticados.
 
-    # 4) Se ainda faltar quantidade, tenta Venda Antiga / Preço Atual.
+    # 4) Se ainda faltar quantidade, tenta Venda Antiga / Preço Atual somente quando
+    # o Preço Atual já veio de uma fonte unitária real.
     qtd_por_antiga = venda_antiga / preco_atual.replace(0, np.nan)
     qtd = qtd.where(qtd.notna() & (qtd > 0), qtd_por_antiga)
 
@@ -17904,8 +17856,7 @@ def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
     c_preco = _eirox_first_col(d, [
         "Preco_Ultima_Venda", "Preço Última Venda", "Preco Ultima Venda",
         "Preço Principal","Preco Principal","Preço_Atual","Preco_Atual",
-        "Preço Atual","Preco Atual","Preco_Medio","Preço Médio",
-        "Preço (R$)","Preco (R$)"
+        "Preço Atual","Preco Atual"
     ])
     c_mercado = _eirox_first_col(d, [
         "Menor Preço Concorrente","Menor_Preco_Concorrente",
@@ -24213,19 +24164,9 @@ if pagina == "📈 Simulador Inteligente":
                     f"{linha.get('Farmácia', '')} | {linha.get('Rede', '')}"
                 )
 
-        if isinstance(venda_final_preparada, pd.DataFrame) and not venda_final_preparada.empty:
-            vf = venda_final_preparada[
-                venda_final_preparada["EAN_SIM"] == ean
-            ].copy()
-
-            if not vf.empty and vf["Itens_SIM"].sum() > 0 and vf["Venda_SIM"].sum() > 0:
-                return (
-                    float(vf["Venda_SIM"].sum() / vf["Itens_SIM"].sum()),
-                    "VENDA_FINAL_TESTE - preço médio Venda / Itens",
-                    ""
-                )
-
-        return 0.0, "Preço atual não localizado", ""
+        # VENDA_FINAL_TESTE contém faturamento e quantidade agregados.
+        # Não usar Venda/Itens como preço atual: isso é média, não última venda real.
+        return 0.0, "Preço atual real não localizado (sem venda unitária datada)", ""
 
     def _dados_custo_sim(ean, estoque_preparado, venda_final_preparada):
         ean = _normalizar_ean_sim(ean)
