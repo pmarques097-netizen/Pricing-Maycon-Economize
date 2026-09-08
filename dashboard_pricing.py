@@ -1051,7 +1051,7 @@ def construir_base_pricing_somente_pastas(historico, compra, venda_rede, estoque
 
         if not v.empty:
             col_ean_v = _achar_coluna_eirox(v, ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras"], ["ean", "gtin", "barras"])
-            col_qtd_v = _achar_coluna_eirox(v, ["Quantidade", "Qtd", "Qtde", "QTD_VENDIDA", "Qtd Vendida"], ["quant", "qtd", "qtde"])
+            col_qtd_v = _achar_coluna_eirox(v, ["Itens", "Item", "Quantidade", "Qtd", "Qtde", "QTD_VENDIDA", "Qtd Vendida", "Unidades"], ["itens", "item", "quant", "qtd", "qtde", "unid"])
             col_val_v = _achar_coluna_eirox(v, ["Valor", "Valor Total", "Valor_Liquido", "Venda", "Venda Preço Antigo"], ["valor", "liquido", "líquido", "venda"])
             col_preco_v = _achar_coluna_eirox(v, ["Preço", "Preco", "Valor Unitario", "Valor Unitário", "valorunitario"], ["preço", "preco", "unit"])
 
@@ -8711,6 +8711,18 @@ def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
     if "Venda_Preco_Antigo" not in vendas.columns:
         vendas["Venda_Preco_Antigo"] = vendas["Qtd_Vendida_Mes_Anterior"] * vendas["Preco_Atual"]
 
+    # V1.4.42: devolve ao dataframe mestre a referência mensal separada.
+    # Isso preserva as sugestões quando VENDA_FINAL_TESTE é agregada por mês,
+    # sem preencher ou falsificar Preco_Atual.
+    _ref_cols = vendas[["EAN", "Preco_Referencia_Calculo"]].drop_duplicates("EAN")
+    if "Preco_Referencia_Calculo" in df_calc.columns:
+        _ref_map = _ref_cols.set_index("EAN")["Preco_Referencia_Calculo"]
+        _ref_atual = pd.to_numeric(df_calc["Preco_Referencia_Calculo"], errors="coerce")
+        _ref_nova = df_calc["EAN"].map(_ref_map)
+        df_calc["Preco_Referencia_Calculo"] = _ref_atual.where(_ref_atual.notna() & (_ref_atual > 0), _ref_nova)
+    else:
+        df_calc = df_calc.merge(_ref_cols, on="EAN", how="left")
+
     mercado = (
         hist
         .dropna(subset=["EAN", col_preco_hist])
@@ -8763,18 +8775,23 @@ def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
     simulacao = vendas.merge(mercado, on="EAN", how="inner")
 
     simulacao["Preco_Atual"] = pd.to_numeric(simulacao["Preco_Atual"], errors="coerce")
+    simulacao["Preco_Referencia_Calculo"] = pd.to_numeric(simulacao["Preco_Referencia_Calculo"], errors="coerce")
+    simulacao["Preco_Base_Calculo"] = simulacao["Preco_Atual"].where(
+        simulacao["Preco_Atual"].notna() & (simulacao["Preco_Atual"] > 0),
+        simulacao["Preco_Referencia_Calculo"]
+    )
     simulacao["Preco_Sugerido_Mercado"] = pd.to_numeric(simulacao["Preco_Sugerido_Mercado"], errors="coerce")
 
     simulacao = simulacao[
         (simulacao["Qtd_Vendida_Mes_Anterior"] > 0)
-        & (simulacao["Preco_Atual"] > 0)
+        & (simulacao["Preco_Base_Calculo"] > 0)
         & (simulacao["Preco_Sugerido_Mercado"] > 0)
-        & (simulacao["Preco_Sugerido_Mercado"] <= simulacao["Preco_Atual"] * 3)
-        & (simulacao["Preco_Sugerido_Mercado"] >= simulacao["Preco_Atual"] * 0.5)
+        & (simulacao["Preco_Sugerido_Mercado"] <= simulacao["Preco_Base_Calculo"] * 3)
+        & (simulacao["Preco_Sugerido_Mercado"] >= simulacao["Preco_Base_Calculo"] * 0.5)
     ].copy()
 
     simulacao["Venda_Projetada_Preco_Sugerido"] = simulacao["Qtd_Vendida_Mes_Anterior"] * simulacao["Preco_Sugerido_Mercado"]
-    simulacao["Ganho_Unitario"] = simulacao["Preco_Sugerido_Mercado"] - simulacao["Preco_Atual"]
+    simulacao["Ganho_Unitario"] = simulacao["Preco_Sugerido_Mercado"] - simulacao["Preco_Base_Calculo"]
     simulacao["Ganho_Potencial_Simulador"] = simulacao["Venda_Projetada_Preco_Sugerido"] - simulacao["Venda_Preco_Antigo"]
 
     simulacao = simulacao[simulacao["Ganho_Potencial_Simulador"] > 0].copy()
@@ -8793,6 +8810,8 @@ def recalcular_ganho_inteligente(df_base, venda_rede_base, historico_base):
 
     for c in [
         "Preco_Atual",
+        "Preco_Referencia_Calculo",
+        "Preco_Base_Calculo",
         "Preco_Sugerido_Mercado",
         "Menor_Preco",
         "Ganho_Unitario",
