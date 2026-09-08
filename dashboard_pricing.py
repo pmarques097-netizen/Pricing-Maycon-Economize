@@ -28443,17 +28443,9 @@ st.markdown(
 # Aviso técnico quando o simulador estiver usando fallback do histórico
 if origem_simulacao_global == "historico_pesquisa":
     st.info(
-        "ℹ️ O simulador operacional está usando o histórico de pesquisa como apoio, "
-        "mas o Ganho Potencial exibido no dashboard permanece o valor oficial da Analise_Pricing.xlsx."
+        "ℹ️ O simulador operacional está usando o histórico de pesquisa como apoio. "
+        "O Potencial de Captura do Dashboard é recalculado pelo mesmo motor da tela SUBIR PREÇO."
     )
-
-
-if "origem_simulacao_global" in globals():
-    if origem_simulacao_global == "venda_rede_historico_inteligente":
-        pass
-
-    else:
-        st.info("ℹ️ Motor inteligente sem base completa. Usando Ganho_Potencial oficial da Analise_Pricing.xlsx.")
 
 if "Ganho_Potencial" in df_filtrado.columns:
     ganho_total_atualizado = pd.to_numeric(
@@ -28472,7 +28464,34 @@ else:
 _eirox_kpi_pesquisas = quantidade_pesquisas_card(historico, df_filtrado)
 _eirox_kpi_rentabilidade = percentual_br(df_filtrado["Margem_%"].mean())
 _eirox_kpi_lucro = moeda_br(df_filtrado["Lucro_Unitario"].mean())
-_eirox_kpi_potencial = moeda_br_kpi(df_filtrado["Ganho_Potencial"].sum())
+
+# V1.4.51 — Potencial de Captura usa exatamente o mesmo motor financeiro
+# da tela SUBIR PREÇO, em vez da coluna histórica Ganho_Potencial.
+try:
+    _base_kpi_subir_v151 = df_filtrado.copy()
+    try:
+        _base_kpi_subir_v151 = eirox_enriquecer_menor_preco_concorrente(
+            _base_kpi_subir_v151,
+            historico if "historico" in globals() else None
+        )
+        _base_kpi_subir_v151 = eirox_padronizar_campos_pesquisa_global(
+            _base_kpi_subir_v151
+        )
+    except Exception:
+        pass
+
+    _subidas_kpi_v151 = eirox_v63_subidas_validas(_base_kpi_subir_v151)
+    if isinstance(_subidas_kpi_v151, pd.DataFrame) and not _subidas_kpi_v151.empty:
+        _potencial_kpi_v151 = pd.to_numeric(
+            _subidas_kpi_v151["Ganho_Lucro_Potencial_Eirox"],
+            errors="coerce"
+        ).fillna(0).sum()
+    else:
+        _potencial_kpi_v151 = 0.0
+except Exception:
+    _potencial_kpi_v151 = 0.0
+
+_eirox_kpi_potencial = moeda_br_kpi(_potencial_kpi_v151)
 _eirox_kpi_labs = df_filtrado["Laboratório"].nunique()
 _eirox_kpi_preco = moeda_br(df_filtrado["Preco_Medio"].mean())
 
@@ -28525,7 +28544,7 @@ explicacao_calculo(
         "Pesquisas = quantidade total de linhas válidas carregadas da pasta VENDA_TESTE.",
         "Margem Média = média da coluna Margem_% dos produtos filtrados.",
         "Lucro Médio = média da coluna Lucro_Unitario dos produtos filtrados.",
-        "Ganho Potencial = soma da coluna Ganho_Potencial dos produtos filtrados.",
+        "Potencial de Captura = soma do Ganho de Lucro Potencial das ações válidas de SUBIR PREÇO, usando o mesmo Preço Atual e a mesma quantidade da tela detalhada.",
         "Laboratórios = quantidade de laboratórios únicos após os filtros.",
         "Preço Médio = média da coluna Preco_Medio dos produtos filtrados."
     ]
