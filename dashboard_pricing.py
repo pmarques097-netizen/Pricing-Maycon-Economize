@@ -7965,7 +7965,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
         return df_pesquisa
 
 
-# V1.4.69 — PERFORMANCE DE TRANSIÇÃO: caches pesados em RAM; cópias só nas fronteiras de uso.
+# V1.4.70 — PERFORMANCE PRIMEIRA ENTRADA: cálculo financeiro duplicado adiado no Dashboard inicial.
 VERSAO_APP = "Enterprise v1.4.47"
 
 # --------------------------------------------------
@@ -16292,7 +16292,7 @@ st.markdown(
 # ENGINE ÚNICA CACHEADA - PERFORMANCE ENTERPRISE
 # --------------------------------------------------
 
-@st.cache_data(show_spinner=False, max_entries=8)
+@st.cache_resource(show_spinner=False, max_entries=8)
 def eirox_processar_base_master_cacheada(
     assinatura_historico,
     assinatura_compra,
@@ -16330,7 +16330,7 @@ def eirox_processar_base_master_cacheada(
     return base
 
 
-@st.cache_data(show_spinner=False, max_entries=8)
+@st.cache_resource(show_spinner=False, max_entries=12)
 def eirox_preprocessar_historico_cacheado(
     assinatura_historico,
     assinatura_contexto,
@@ -16354,7 +16354,7 @@ def eirox_classificar_base_cacheada(
     return aplicar_classificacao_principal_concorrente(_base, tipo_base)
 
 
-@st.cache_data(show_spinner=False, max_entries=8)
+@st.cache_resource(show_spinner=False, max_entries=12)
 def eirox_recalcular_ganho_cacheado(
     assinatura_master,
     assinatura_venda,
@@ -16524,14 +16524,23 @@ historico = eirox_preprocessar_historico_cacheado(
     historico,
 )
 
+# V1.4.70 — auditoria sob demanda para não penalizar a primeira entrada.
 try:
-    auditoria = auditoria_pesquisa_atual()
-    if isinstance(auditoria, dict) and auditoria:
-        with st.sidebar.expander("🔎 Auditoria da pesquisa", expanded=False):
+    with st.sidebar.expander("🔎 Auditoria da pesquisa", expanded=False):
+        if st.button("Carregar auditoria", key="eirox_v170_carregar_auditoria"):
+            try:
+                st.session_state["eirox_v170_auditoria"] = auditoria_pesquisa_atual()
+            except Exception:
+                st.session_state["eirox_v170_auditoria"] = {}
+
+        auditoria = st.session_state.get("eirox_v170_auditoria", {})
+        if isinstance(auditoria, dict) and auditoria:
             st.caption(f"Linhas lidas: {auditoria.get('linhas_antes', 0)}")
             st.caption(f"Linhas válidas: {auditoria.get('linhas_depois', 0)}")
             st.caption(f"Duplicadas removidas: {auditoria.get('duplicadas_removidas', 0)}")
             st.caption(f"Chave: {auditoria.get('chave_usada', '')}")
+        else:
+            st.caption("Auditoria carregada somente quando solicitada.")
 except Exception:
     pass
 
@@ -16561,7 +16570,7 @@ df = eirox_processar_base_master_cacheada(
     compra,
     venda_rede,
     estoque,
-).copy()
+).copy(deep=False)
 
 if historico.empty:
     historico = ler_base_pasta_ou_zip(
@@ -16804,18 +16813,34 @@ if not historico.empty:
 simulacao_global = pd.DataFrame()
 origem_simulacao_global = "sem_calculo"
 
-df, simulacao_global, origem_simulacao_global = eirox_recalcular_ganho_cacheado(
-    _eirox_sig_master,
-    _eirox_sig_venda,
-    _eirox_sig_historico,
-    _eirox_sig_contexto,
-    df,
-    venda_rede,
-    historico,
+# V1.4.70 — PRIMEIRA ENTRADA RÁPIDA.
+# O Dashboard Geral recalcula seu simulador financeiro unificado mais abaixo
+# (V1.4.59). Portanto, executar aqui o simulador antigo inteiro era trabalho
+# duplicado justamente na página inicial.
+_eirox_pagina_hint_v170 = st.session_state.get(
+    "eirox_pagina_global",
+    "📊 Dashboard Geral"
+)
+_eirox_dashboard_inicial_v170 = (
+    str(_eirox_pagina_hint_v170).strip() == "📊 Dashboard Geral"
 )
 
-# V1.4.53 — o Ganho_Potencial já sai reconciliado do motor com o último
-# mês fechado por EAN. Apenas cria aliases, sem restaurar valores históricos.
+if not _eirox_dashboard_inicial_v170:
+    df, simulacao_global, origem_simulacao_global = eirox_recalcular_ganho_cacheado(
+        _eirox_sig_master,
+        _eirox_sig_venda,
+        _eirox_sig_historico,
+        _eirox_sig_contexto,
+        df,
+        venda_rede,
+        historico,
+    )
+else:
+    # Mantém os ganhos que já saem da base mestre; o valor financeiro
+    # definitivo do Dashboard é calculado pelo motor unificado da própria tela.
+    origem_simulacao_global = "adiado_dashboard_v170"
+
+# Cria somente os aliases necessários, sem recalcular o motor.
 df = propagar_ganho_potencial(df)
 
 if isinstance(simulacao_global, pd.DataFrame) and not simulacao_global.empty:
@@ -17741,16 +17766,19 @@ def eirox_v1430_enriquecer_venda_compra_cacheado(
     )
 
 
-df_filtrado = eirox_v1430_enriquecer_venda_compra_cacheado(
-    _eirox_chave_filtros,
-    _eirox_sig_master,
-    _eirox_sig_venda,
-    _eirox_sig_compra,
-    _eirox_sig_contexto,
-    df_filtrado,
-    simulacao_global if "simulacao_global" in globals() else None,
-    _compra_contexto_municipio if "_compra_contexto_municipio" in globals() else (compra if "compra" in globals() else None),
-).copy(deep=True)
+# V1.4.70 — no Dashboard Geral este enriquecimento é redundante:
+# a base mestre já contém venda/custo e o simulador unificado é calculado na tela.
+if str(pagina).strip() != "📊 Dashboard Geral":
+    df_filtrado = eirox_v1430_enriquecer_venda_compra_cacheado(
+        _eirox_chave_filtros,
+        _eirox_sig_master,
+        _eirox_sig_venda,
+        _eirox_sig_compra,
+        _eirox_sig_contexto,
+        df_filtrado,
+        simulacao_global if "simulacao_global" in globals() else None,
+        _compra_contexto_municipio if "_compra_contexto_municipio" in globals() else (compra if "compra" in globals() else None),
+    ).copy(deep=True)
 
 
 
