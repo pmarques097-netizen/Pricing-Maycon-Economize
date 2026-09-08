@@ -8,15 +8,115 @@ import zipfile
 import shutil
 import pandas as pd
 
+# V1.4.44 — helpers incorporados ao dashboard; sem módulo externo.
+def _key(value):
+    return "".join(c for c in unicodedata.normalize("NFKD", str(value).casefold())
+                   if not unicodedata.combining(c)).replace("_", " ").strip()
+
+def _col(df, names):
+    lookup = {_key(c): c for c in df.columns}
+    return next((lookup[_key(n)] for n in names if _key(n) in lookup), None)
+
+def _ean(s):
+    return s.astype(str).str.replace(r"\.0$", "", regex=True).str.replace(r"\D", "", regex=True)
+
+def _num(s):
+    if pd.api.types.is_numeric_dtype(s):
+        return pd.to_numeric(s, errors="coerce")
+    t = s.astype(str).str.replace("R$", "", regex=False).str.strip()
+    both = t.str.contains(",", regex=False) & t.str.contains(".", regex=False)
+    t = t.where(~both, t.str.replace(".", "", regex=False))
+    t = t.str.replace(",", ".", regex=False)
+    return pd.to_numeric(t, errors="coerce")
+
+def _dates(s):
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return pd.to_datetime(s, errors="coerce")
+    t = s.astype(str).str.strip()
+    t = t.str.replace(r"\s+(AMT|AMST|BRT|BRST|GMT(?:[+-]\d+)?|UTC(?:[+-]\d+)?)\s+", " ", regex=True, flags=re.I)
+    dt = pd.to_datetime(t, format="%a %b %d %H:%M:%S %Y", errors="coerce")
+    missing = dt.isna()
+    if missing.any():
+        dt.loc[missing] = pd.to_datetime(t.loc[missing], format="mixed", dayfirst=True, errors="coerce")
+    return dt
+
+def latest_principal(frame, cnpjs):
+    """Only explicitly owned CNPJs; never infer ownership from a competitor name."""
+    empty = pd.DataFrame(columns=["EAN", "Preco_Ultima_Venda", "Data_Ultima_Venda", "Loja_Ultima_Venda", "Arquivo_Ultima_Venda"])
+    if not isinstance(frame, pd.DataFrame) or frame.empty or not cnpjs:
+        return empty
+    ce = _col(frame, ["EAN (GTIN)", "EAN", "GTIN", "Código de Barras"])
+    cp = _col(frame, ["Preço (R$)", "Preco (R$)", "Preço", "Preco"])
+    cd = _col(frame, ["Data Emissão", "Data Emissao", "Data da Pesquisa", "Data Pesquisa"])
+    cc = _col(frame, ["CNPJ", "CNPJ Farmácia", "CNPJ Farmacia"])
+    cl = _col(frame, ["Farmácia", "Farmacia", "Loja", "Nome Fantasia"])
+    if any(x is None for x in [ce,cp,cd,cc]):
+        return empty
+    owned = {re.sub(r"\D", "", str(x)) for x in cnpjs}
+    owned.discard("")
+    b = frame.copy()
+    b = b[b[cc].astype(str).str.replace(r"\D", "", regex=True).isin(owned)].copy()
+    if b.empty:
+        return empty
+    b["EAN"] = _ean(b[ce])
+    b["Preco_Ultima_Venda"] = _num(b[cp])
+    b["Data_Ultima_Venda"] = _dates(b[cd])
+    b["Loja_Ultima_Venda"] = b[cl].fillna("").astype(str) if cl else ""
+    b["Arquivo_Ultima_Venda"] = b["Arquivo_Origem"].astype(str) if "Arquivo_Origem" in b else ""
+    b = b[b["EAN"].ne("") & b["Data_Ultima_Venda"].notna() &
+          b["Preco_Ultima_Venda"].gt(0)].copy()
+    if b.empty:
+        return empty
+    b["_ordem"] = np.arange(len(b))
+    b = b.sort_values(["EAN","Data_Ultima_Venda","_ordem"], kind="stable").groupby("EAN",sort=False).tail(1)
+    return b[empty.columns].reset_index(drop=True)
+
+def read_folder(folder, cnpjs):
+    paths = sorted(list(Path(folder).glob("*.xlsx")) + list(Path(folder).glob("*.xls")))
+    frames = []
+    for path in paths:
+        if path.name.startswith("~$"):
+            continue
+        try:
+            df = pd.read_excel(path, dtype={"CNPJ": str, "EAN (GTIN)": str, "EAN": str})
+            df["Arquivo_Origem"] = path.name
+            frames.append(df)
+        except Exception:
+            continue
+    if not frames:
+        return latest_principal(pd.DataFrame(), cnpjs)
+    return latest_principal(pd.concat(frames, ignore_index=True), cnpjs)
+
+def apply_latest(base, latest, preserve_reference=True):
+    """Overwrite only Principal price fields, preserving market, volume and cost."""
+    if not isinstance(base,pd.DataFrame) or base.empty:
+        return base
+    d=base.copy()
+    ce=_col(d,["EAN","EAN (GTIN)","GTIN"])
+    if ce is None:
+        return d
+    keys=_ean(d[ce])
+    lookup=latest.set_index("EAN") if isinstance(latest,pd.DataFrame) and not latest.empty else pd.DataFrame()
+    price=keys.map(lookup["Preco_Ultima_Venda"]) if not lookup.empty else pd.Series(np.nan,index=d.index)
+    date=keys.map(lookup["Data_Ultima_Venda"]) if not lookup.empty else pd.Series(pd.NaT,index=d.index)
+    if preserve_reference:
+        for target in ["Preco_Atual","Preco_Atual_Venda","Preço Principal","Preco Principal","Preço Atual"]:
+            if target in d.columns and "Preco_Referencia_Calculo" not in d.columns:
+                # Never relabel an unverified existing value as a real sale.
+                d["Preco_Referencia_Calculo"]=np.nan
+    for target in ["Preco_Ultima_Venda","Preco_Atual","Preco_Atual_Venda","Preço Principal","Preco Principal","Preço Atual"]:
+        if target in d.columns or target in ["Preco_Ultima_Venda","Preco_Atual"]:
+            d[target]=price.to_numpy()
+    d["Data_Ultima_Venda"]=date.to_numpy()
+    d["Fonte_Preço_Eirox"]=np.where(price.notna(),"ÚLTIMA VENDA","SEM PESQUISA DO PRINCIPAL")
+    return d
+
 # V1.4.43 — fonte única do Principal: VENDA_TESTE, última Data Emissão.
-from pricing_ultima_pesquisa import read_folder as _v143_read_folder
-from pricing_ultima_pesquisa import apply_latest as _v143_apply_latest
-from pricing_ultima_pesquisa import _ean as _v143_ean
 from functools import lru_cache as _v143_lru_cache
 
 @_v143_lru_cache(maxsize=12)
 def _v143_cached_latest(signature, cnpjs):
-    return _v143_read_folder(Path(__file__).resolve().parent / "VENDA_TESTE", cnpjs)
+    return read_folder(Path(__file__).resolve().parent / "VENDA_TESTE", cnpjs)
 
 def eirox_v143_ultima_pesquisa():
     pasta = Path(__file__).resolve().parent / "VENDA_TESTE"
@@ -33,7 +133,7 @@ def eirox_v143_ultima_pesquisa():
     return _v143_cached_latest(assinatura, cnpjs).copy()
 
 def eirox_v143_aplicar_preco(base):
-    return _v143_apply_latest(base, eirox_v143_ultima_pesquisa())
+    return apply_latest(base, eirox_v143_ultima_pesquisa())
 
 import numpy as np
 import plotly.express as px
