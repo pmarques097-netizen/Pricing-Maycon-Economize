@@ -15798,6 +15798,285 @@ except Exception:
 
 
 
+
+# ================================================================
+# PRIORIDADE DE PESQUISA — V1.4.36
+# Cadastro operacional dos produtos prioritários para pesquisa.
+# A fila é isolada por empresa/cliente e pode ser exportada/importada.
+# ================================================================
+PRIORIDADE_PESQUISA_ARQUIVO = Path(__file__).resolve().parent / "PRIORIDADE_PESQUISA.csv"
+
+
+def _prio_normalizar_ean(valor):
+    try:
+        s = str(valor or "").strip()
+        if s.endswith(".0"):
+            s = s[:-2]
+        return re.sub(r"\D", "", s)
+    except Exception:
+        return ""
+
+
+def _prio_empresa_id():
+    try:
+        if "empresa_contexto_atual" in globals():
+            v = empresa_contexto_atual()
+            if v not in (None, ""):
+                return str(v)
+    except Exception:
+        pass
+    return str(st.session_state.get("empresa_id_usuario", "1") or "1")
+
+
+def _prio_coluna(base, candidatos):
+    if not isinstance(base, pd.DataFrame):
+        return None
+    norm = {re.sub(r"[^a-z0-9]", "", str(c).lower()): c for c in base.columns}
+    for cand in candidatos:
+        k = re.sub(r"[^a-z0-9]", "", str(cand).lower())
+        if k in norm:
+            return norm[k]
+    return None
+
+
+def _prio_carregar():
+    cols = ["EmpresaID", "Ordem", "EAN", "Produto", "Prioridade", "Ativo", "Origem", "Observacao", "AtualizadoEm"]
+    try:
+        if PRIORIDADE_PESQUISA_ARQUIVO.exists():
+            out = pd.read_csv(PRIORIDADE_PESQUISA_ARQUIVO, sep=";", dtype=str, encoding="utf-8-sig")
+        else:
+            out = pd.DataFrame(columns=cols)
+    except Exception:
+        out = pd.DataFrame(columns=cols)
+    for c in cols:
+        if c not in out.columns:
+            out[c] = ""
+    out = out[cols].copy()
+    out["EAN"] = out["EAN"].apply(_prio_normalizar_ean)
+    out["Ativo"] = out["Ativo"].astype(str).str.lower().isin(["1", "true", "sim", "yes", "s", "x"])
+    out["Ordem"] = pd.to_numeric(out["Ordem"], errors="coerce")
+    return out
+
+
+def _prio_salvar(base):
+    try:
+        out = base.copy()
+        out["EAN"] = out["EAN"].apply(_prio_normalizar_ean)
+        out = out[out["EAN"].str.len().gt(0)].copy()
+        out = out.drop_duplicates(["EmpresaID", "EAN"], keep="last")
+        tmp = PRIORIDADE_PESQUISA_ARQUIVO.with_suffix(".tmp")
+        out.to_csv(tmp, sep=";", index=False, encoding="utf-8-sig")
+        tmp.replace(PRIORIDADE_PESQUISA_ARQUIVO)
+        return True, ""
+    except Exception as exc:
+        st.session_state["prioridade_pesquisa_fallback"] = base.copy()
+        return False, str(exc)
+
+
+def _prio_base_empresa():
+    emp = _prio_empresa_id()
+    base = _prio_carregar()
+    atual = base[base["EmpresaID"].astype(str) == emp].copy()
+    # O arquivo inicial vem com EmpresaID=* e é clonado somente no primeiro uso da empresa.
+    if atual.empty:
+        seed = base[base["EmpresaID"].astype(str) == "*"].copy()
+        if not seed.empty:
+            seed["EmpresaID"] = emp
+            seed["AtualizadoEm"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+            base = pd.concat([base, seed], ignore_index=True)
+            _prio_salvar(base)
+            atual = seed.copy()
+    return base, atual
+
+
+def _prio_resumo_pesquisa(prioridades, dados):
+    p = prioridades.copy()
+    if p.empty:
+        return p
+    p["EAN"] = p["EAN"].apply(_prio_normalizar_ean)
+    p["Prioridade"] = p["Prioridade"].replace("", "1 - Crítica")
+    rank = {"1 - Crítica": 1, "2 - Alta": 2, "3 - Normal": 3}
+    p["_rank"] = p["Prioridade"].map(rank).fillna(9)
+
+    if not isinstance(dados, pd.DataFrame) or dados.empty:
+        p["Status Pesquisa"] = "⏳ Pendente"
+        p["Qtd. Registros"] = 0
+        p["Data mais recente"] = ""
+        return p.sort_values(["_rank", "Ordem"], na_position="last")
+
+    ean_col = _prio_coluna(dados, ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras", "codigobarras"])
+    data_col = _prio_coluna(dados, ["Data da Pesquisa", "Data Pesquisa", "Data_Pesquisa", "Data Emissão", "Data", "Data Emissao"])
+    if not ean_col:
+        p["Status Pesquisa"] = "⏳ Pendente"
+        p["Qtd. Registros"] = 0
+        p["Data mais recente"] = ""
+        return p.sort_values(["_rank", "Ordem"], na_position="last")
+
+    d = dados.copy()
+    d["_EAN_PRIO"] = d[ean_col].apply(_prio_normalizar_ean)
+    d = d[d["_EAN_PRIO"].str.len().gt(0)]
+    agg = d.groupby("_EAN_PRIO", as_index=False).size().rename(columns={"size": "Qtd. Registros"})
+    if data_col:
+        dd = d[["_EAN_PRIO", data_col]].copy()
+        dd["_DATA_PRIO"] = pd.to_datetime(dd[data_col], errors="coerce", dayfirst=True)
+        ult = dd.groupby("_EAN_PRIO", as_index=False)["_DATA_PRIO"].max()
+        ult["Data mais recente"] = ult["_DATA_PRIO"].dt.strftime("%d/%m/%Y").fillna("")
+        agg = agg.merge(ult[["_EAN_PRIO", "Data mais recente"]], on="_EAN_PRIO", how="left")
+    else:
+        agg["Data mais recente"] = ""
+
+    p = p.merge(agg, left_on="EAN", right_on="_EAN_PRIO", how="left")
+    p["Qtd. Registros"] = pd.to_numeric(p["Qtd. Registros"], errors="coerce").fillna(0).astype(int)
+    p["Data mais recente"] = p["Data mais recente"].fillna("")
+    p["Status Pesquisa"] = p["Qtd. Registros"].gt(0).map({True: "✅ Pesquisado", False: "⏳ Pendente"})
+    p = p.drop(columns=["_EAN_PRIO"], errors="ignore")
+    return p.sort_values(["_rank", "Ordem"], na_position="last")
+
+
+def eirox_render_prioridade_pesquisa(dados_contexto):
+    st.markdown("""
+    <div class="eirox-hero">
+      <div class="eirox-section-title">Operação de Pesquisa</div>
+      <h1>🎯 Prioridade de Pesquisa</h1>
+      <p>Cadastre os produtos mais importantes da venda e acompanhe quais já possuem pesquisa na base atual.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.caption("ⓘ A fila é ordenada por prioridade. Itens pendentes devem ser pesquisados primeiro e podem ser exportados para a equipe de campo.")
+
+    base_toda, base_emp = _prio_base_empresa()
+    ativos = base_emp[base_emp["Ativo"] == True].copy()
+    fila = _prio_resumo_pesquisa(ativos, dados_contexto)
+
+    total = len(ativos)
+    pesquisados = int((fila.get("Status Pesquisa", pd.Series(dtype=str)) == "✅ Pesquisado").sum()) if total else 0
+    pendentes = max(total - pesquisados, 0)
+    cobertura = (pesquisados / total * 100.0) if total else 0.0
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Produtos prioritários", f"{total:,}".replace(",", "."))
+    c2.metric("Já pesquisados", f"{pesquisados:,}".replace(",", "."))
+    c3.metric("Pendentes", f"{pendentes:,}".replace(",", "."))
+    c4.metric("Cobertura", f"{cobertura:.1f}%".replace(".", ","))
+
+    tab1, tab2, tab3 = st.tabs(["📋 Fila de Pesquisa", "➕ Cadastrar / Importar", "⚙️ Manutenção"])
+
+    with tab1:
+        f1,f2 = st.columns([2,1])
+        busca = f1.text_input("Buscar por EAN ou produto", key="prio_busca")
+        status = f2.selectbox("Status", ["Todos", "⏳ Pendente", "✅ Pesquisado"], key="prio_status")
+        vis = fila.copy()
+        if busca:
+            termo = str(busca).strip()
+            vis = vis[vis["EAN"].astype(str).str.contains(termo, case=False, na=False) | vis["Produto"].astype(str).str.contains(termo, case=False, na=False)]
+        if status != "Todos":
+            vis = vis[vis["Status Pesquisa"] == status]
+        cols = [c for c in ["Ordem", "Prioridade", "EAN", "Produto", "Status Pesquisa", "Qtd. Registros", "Data mais recente", "Observacao"] if c in vis.columns]
+        st.dataframe(vis[cols], use_container_width=True, hide_index=True, height=520)
+        export = vis[cols].copy().to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button("⬇️ Exportar fila de pesquisa", export, file_name="prioridade_pesquisa.csv", mime="text/csv", use_container_width=True)
+
+    with tab2:
+        st.subheader("Lançar produto prioritário")
+        with st.form("form_prio_add", clear_on_submit=True):
+            a,b = st.columns([1,2])
+            ean = a.text_input("EAN / Código de barras")
+            produto = b.text_input("Produto / Embalagem")
+            c,d = st.columns([1,2])
+            prioridade = c.selectbox("Prioridade", ["1 - Crítica", "2 - Alta", "3 - Normal"])
+            obs = d.text_input("Observação")
+            incluir = st.form_submit_button("➕ Adicionar à fila", use_container_width=True)
+        if incluir:
+            ean_n = _prio_normalizar_ean(ean)
+            if not ean_n:
+                st.error("Informe um EAN válido.")
+            elif not str(produto).strip():
+                st.error("Informe o produto.")
+            else:
+                emp = _prio_empresa_id()
+                todos = _prio_carregar()
+                mask = (todos["EmpresaID"].astype(str)==emp) & (todos["EAN"].astype(str)==ean_n)
+                ordem_max = pd.to_numeric(todos.loc[todos["EmpresaID"].astype(str)==emp, "Ordem"], errors="coerce").max()
+                nova_ordem = 1 if pd.isna(ordem_max) else int(ordem_max)+1
+                row = {"EmpresaID":emp,"Ordem":nova_ordem,"EAN":ean_n,"Produto":str(produto).strip(),"Prioridade":prioridade,"Ativo":True,"Origem":"Manual","Observacao":str(obs).strip(),"AtualizadoEm":datetime.now().strftime("%d/%m/%Y %H:%M")}
+                if mask.any():
+                    for k,v in row.items(): todos.loc[mask,k]=v
+                else:
+                    todos = pd.concat([todos, pd.DataFrame([row])], ignore_index=True)
+                ok,erro = _prio_salvar(todos)
+                st.success("Produto incluído/atualizado na fila." if ok else "Produto mantido nesta sessão; não foi possível persistir no arquivo.")
+                st.rerun()
+
+        st.divider()
+        st.subheader("Importar lista")
+        st.caption("Aceita CSV ou Excel. O arquivo deve ter uma coluna de EAN/código de barras e, preferencialmente, uma coluna Produto/Embalagem.")
+        up = st.file_uploader("Arquivo", type=["csv","xlsx","xls"], key="prio_import")
+        if up is not None:
+            try:
+                if str(up.name).lower().endswith(".csv"):
+                    imp = pd.read_csv(up, sep=None, engine="python", dtype=str)
+                else:
+                    imp = pd.read_excel(up, dtype=str)
+                ce = _prio_coluna(imp, ["EAN","EAN (GTIN)","GTIN","Código de Barras","Codigo de Barras","Cód. Barras/Etiq.","Cod Barras"])
+                cp = _prio_coluna(imp, ["Produto","Embalagem","Descrição","Descricao","Nome"])
+                if not ce:
+                    st.error("Não encontrei a coluna de EAN/código de barras.")
+                else:
+                    prev = pd.DataFrame({"EAN": imp[ce].apply(_prio_normalizar_ean), "Produto": imp[cp].astype(str) if cp else ""})
+                    prev = prev[prev["EAN"].str.len().gt(0)].drop_duplicates("EAN")
+                    st.dataframe(prev.head(30), use_container_width=True, hide_index=True)
+                    if st.button("📥 Importar para prioridade", use_container_width=True):
+                        emp = _prio_empresa_id(); todos = _prio_carregar()
+                        ordem_max = pd.to_numeric(todos.loc[todos["EmpresaID"].astype(str)==emp, "Ordem"], errors="coerce").max()
+                        ordem = 0 if pd.isna(ordem_max) else int(ordem_max)
+                        for _,r in prev.iterrows():
+                            e = r["EAN"]; prod = str(r["Produto"] or "").strip()
+                            mask=(todos["EmpresaID"].astype(str)==emp)&(todos["EAN"].astype(str)==e)
+                            if mask.any():
+                                if prod: todos.loc[mask,"Produto"] = prod
+                                todos.loc[mask,"Ativo"] = True
+                            else:
+                                ordem += 1
+                                nr={"EmpresaID":emp,"Ordem":ordem,"EAN":e,"Produto":prod,"Prioridade":"1 - Crítica","Ativo":True,"Origem":"Importação","Observacao":"","AtualizadoEm":datetime.now().strftime("%d/%m/%Y %H:%M")}
+                                todos=pd.concat([todos,pd.DataFrame([nr])],ignore_index=True)
+                        _prio_salvar(todos)
+                        st.success(f"{len(prev)} itens processados.")
+                        st.rerun()
+            except Exception as exc:
+                st.error(f"Não foi possível ler o arquivo: {exc}")
+
+    with tab3:
+        st.subheader("Manutenção da lista")
+        emp = _prio_empresa_id()
+        manut = base_emp[["Ordem","EAN","Produto","Prioridade","Ativo","Observacao"]].copy()
+        manut["Excluir"] = False
+        edit = st.data_editor(
+            manut,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed",
+            column_config={
+                "Prioridade": st.column_config.SelectboxColumn("Prioridade", options=["1 - Crítica","2 - Alta","3 - Normal"]),
+                "Ativo": st.column_config.CheckboxColumn("Ativo"),
+                "Excluir": st.column_config.CheckboxColumn("Excluir"),
+            },
+            key="prio_editor"
+        )
+        if st.button("💾 Salvar alterações", use_container_width=True):
+            todos = _prio_carregar()
+            outros = todos[todos["EmpresaID"].astype(str)!=emp].copy()
+            edit = edit[edit["Excluir"] != True].copy().drop(columns=["Excluir"], errors="ignore")
+            edit["EmpresaID"] = emp
+            edit["Origem"] = "Cadastro"
+            edit["AtualizadoEm"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+            edit["EAN"] = edit["EAN"].apply(_prio_normalizar_ean)
+            final = pd.concat([outros, edit], ignore_index=True)
+            ok,erro = _prio_salvar(final)
+            if ok:
+                st.success("Lista atualizada.")
+                st.rerun()
+            else:
+                st.error(f"Não foi possível persistir as alterações: {erro}")
+
+
 paginas_liberadas = PERMISSOES_TELAS.get(
     perfil_usuario,
     [
@@ -15859,6 +16138,10 @@ if usuario_pode_ver_billing_enterprise() and "💳 Billing Enterprise" not in pa
 
 paginas_liberadas = filtrar_paginas_por_plano(paginas_liberadas)
 
+# V1.4.36 — tela operacional de prioridade disponível aos perfis de negócio.
+if perfil_usuario in {"Master", "Diretoria", "Pricing", "Comercial", "Regional"} and "🎯 Prioridade de Pesquisa" not in paginas_liberadas:
+    paginas_liberadas = paginas_liberadas + ["🎯 Prioridade de Pesquisa"]
+
 # Evita qualquer tela duplicada no menu, preservando a ordem original.
 paginas_liberadas = list(dict.fromkeys(paginas_liberadas))
 # EIROX_V45_REMOVE_REDE_LOJA
@@ -15869,7 +16152,7 @@ paginas_liberadas = [p for p in paginas_liberadas if p != "📋 Workflow Comerci
 
 # EIROX_NUCLEO_CANONICO_MENU
 # Mantém a sequência operacional principal padronizada.
-_ordem_core = ["📊 Geral", "⬆️ Subir Preço", "⬇️ Baixar Preço", "🤝 Negociar Compra"]
+_ordem_core = ["🎯 Prioridade de Pesquisa", "📊 Geral", "⬆️ Subir Preço", "⬇️ Baixar Preço", "🤝 Negociar Compra"]
 _existentes_core = [p for p in _ordem_core if p in paginas_liberadas]
 _restantes_core = [p for p in paginas_liberadas if p not in _ordem_core]
 
@@ -15906,7 +16189,7 @@ else:
 
 
 # Núcleo comercial - mesma ordem da proposta visual.
-_core_pages_eirox = ["📊 Geral", "⬆️ Subir Preço", "⬇️ Baixar Preço", "🤝 Negociar Compra"]
+_core_pages_eirox = ["🎯 Prioridade de Pesquisa", "📊 Geral", "⬆️ Subir Preço", "⬇️ Baixar Preço", "🤝 Negociar Compra"]
 if "📊 Dashboard Geral" in paginas_liberadas:
     _idx_dashboard = paginas_liberadas.index("📊 Dashboard Geral") + 1
     for _pg in reversed(_core_pages_eirox):
@@ -19339,6 +19622,10 @@ df_filtrado = eirox_v142_data_final_unica(
 
 # TELAS CENTRAIS - PROPOSTA VISUAL APROVADA
 # --------------------------------------------------
+if pagina == "🎯 Prioridade de Pesquisa":
+    eirox_render_prioridade_pesquisa(df_filtrado)
+    st.stop()
+
 if pagina == "📊 Geral":
     eirox_render_dashboard_pdf(df_filtrado)
     st.stop()
