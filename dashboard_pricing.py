@@ -28798,6 +28798,135 @@ def eirox_v160_render_motor_rentabilidade(base):
 # Alteração exclusivamente visual. Não altera DataFrames, regras, filtros,
 # cálculos, recomendações, exportações ou fontes de dados.
 # ================================================================
+# V1.4.61 — Índice Eirox preservado no Dashboard Geral, inclusive ao alternar
+# para o Motor de Rentabilidade.
+try:
+    _eirox_margem_indice_v161 = 0.0
+    if "Margem_%" in df_filtrado.columns:
+        _serie_margem_v161 = pd.to_numeric(
+            df_filtrado["Margem_%"], errors="coerce"
+        ).dropna()
+        if not _serie_margem_v161.empty:
+            _eirox_margem_indice_v161 = float(_serie_margem_v161.mean())
+
+    # Mantém a fórmula original, mas usa o Potencial de Captura já unificado
+    # entre Dashboard, Subir Preço, Simulador e Executivo.
+    _eirox_potencial_indice_v161 = 0.0
+    try:
+        _sim_indice_v161 = eirox_v159_simulacao_unificada(df_filtrado.copy())
+        if isinstance(_sim_indice_v161, pd.DataFrame) and not _sim_indice_v161.empty:
+            _eirox_potencial_indice_v161 = float(
+                pd.to_numeric(
+                    _sim_indice_v161["Ganho_Potencial_Simulador"],
+                    errors="coerce"
+                ).fillna(0).sum()
+            )
+    except Exception:
+        if "Ganho_Potencial" in df_filtrado.columns:
+            _eirox_potencial_indice_v161 = float(
+                pd.to_numeric(
+                    df_filtrado["Ganho_Potencial"], errors="coerce"
+                ).fillna(0).sum()
+            )
+
+    _eirox_indice_v161 = round(
+        (_eirox_margem_indice_v161 * 0.60)
+        + ((_eirox_potencial_indice_v161 / 1000.0) * 0.40)
+    )
+
+    if _eirox_indice_v161 >= 70:
+        _eirox_faixa_indice_v161 = "🟢 Alta oportunidade"
+    elif _eirox_indice_v161 >= 40:
+        _eirox_faixa_indice_v161 = "🟡 Oportunidade relevante"
+    else:
+        _eirox_faixa_indice_v161 = "🔴 Baixo impacto"
+
+    st.markdown(
+        f"""
+        <style>
+        .eirox-index-card-v161 {{
+            border:1px solid rgba(117,73,191,.72);
+            border-radius:18px;
+            padding:15px 18px 14px;
+            margin:0 0 12px 0;
+            background:
+                radial-gradient(circle at 92% 18%, rgba(174,88,255,.16), transparent 32%),
+                linear-gradient(135deg,#151b3f 0%,#0c1f39 100%);
+            box-shadow:0 8px 22px rgba(0,0,0,.16);
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:18px;
+        }}
+        .eirox-index-label-v161 {{
+            color:#bda8ff;
+            font-size:12px;
+            font-weight:800;
+            letter-spacing:.12em;
+            text-transform:uppercase;
+        }}
+        .eirox-index-title-v161 {{
+            color:#f4f7ff;
+            font-size:20px;
+            font-weight:850;
+            margin-top:4px;
+        }}
+        .eirox-index-meta-v161 {{
+            color:#91a8c2;
+            font-size:12px;
+            margin-top:5px;
+        }}
+        .eirox-index-value-v161 {{
+            color:#ffffff;
+            font-size:34px;
+            font-weight:900;
+            line-height:1;
+            text-align:right;
+        }}
+        .eirox-index-band-v161 {{
+            color:#c7d5e8;
+            font-size:12px;
+            text-align:right;
+            margin-top:7px;
+        }}
+        </style>
+        <div class="eirox-index-card-v161">
+            <div>
+                <div class="eirox-index-label-v161">Índice de Oportunidade</div>
+                <div class="eirox-index-title-v161">🤖 Índice Eirox</div>
+                <div class="eirox-index-meta-v161">
+                    60% Rentabilidade Atual + 40% Potencial de Captura
+                </div>
+            </div>
+            <div>
+                <div class="eirox-index-value-v161">{_eirox_indice_v161}</div>
+                <div class="eirox-index-band-v161">{_eirox_faixa_indice_v161}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    with st.expander("🎯 Entenda o Índice Eirox", expanded=False):
+        st.markdown(
+            f"""
+**Fórmula original preservada**
+
+**Índice Eirox = (Rentabilidade Atual × 60%) + ((Potencial de Captura ÷ 1.000) × 40%)**
+
+- Rentabilidade média usada: **{_eirox_margem_indice_v161:.2f}**
+- Potencial de Captura atual: **{moeda_br(_eirox_potencial_indice_v161)}**
+- Índice calculado: **{_eirox_indice_v161}**
+
+Faixas:
+- 🟢 Acima de 70 pontos: alta oportunidade.
+- 🟡 Entre 40 e 70 pontos: oportunidade relevante.
+- 🔴 Abaixo de 40 pontos: baixo impacto financeiro.
+            """
+        )
+except Exception:
+    pass
+
 # V1.4.60 — seletor de visão do Dashboard Geral.
 _eirox_visao_dashboard_v160 = st.radio(
     "Visão do Dashboard",
@@ -31477,116 +31606,10 @@ if not compra.empty:
     )
 
 # --------------------------------------------------
-
-# SCORE EIROX
-
+# ÍNDICE EIROX
 # --------------------------------------------------
-
-st.subheader(
-    "🤖 Índice de Oportunidade Eirox"
-)
-
-# Cálculo do índice com tratamento seguro para evitar erro caso alguma coluna não exista.
-margem_media_score = 0
-if "Margem_%" in df_filtrado.columns:
-    margem_media_score = pd.to_numeric(
-        df_filtrado["Margem_%"],
-        errors="coerce"
-    ).dropna().mean()
-
-ganho_potencial_score = 0
-if "Ganho_Potencial" in df_filtrado.columns:
-    ganho_potencial_score = pd.to_numeric(
-        df_filtrado["Ganho_Potencial"],
-        errors="coerce"
-    ).fillna(0).sum()
-
-score = round(
-    (margem_media_score * 0.6)
-    +
-    ((ganho_potencial_score / 1000) * 0.4)
-)
-
-st.metric(
-    "Índice Eirox",
-    score
-)
-
-with st.expander("🎯 Entenda o Índice de Oportunidade Eirox", expanded=False):
-
-    st.markdown("""
-### Como funciona o Índice de Oportunidade Eirox?
-
-O Índice Eirox identifica os produtos com maior potencial de geração de resultado através de ações de Pricing.
-
----
-
-### 💰 Potencial de Captura
-
-Representa o valor adicional que a empresa poderia faturar ao ajustar o preço do produto até o limite competitivo do mercado, sem ficar mais cara que a concorrência.
-
-#### Como calculamos?
-
-**Espaço para aumento = Preço Máximo Competitivo - Preço Atual**
-
-**Potencial de Captura = Espaço para aumento × Quantidade vendida no mês anterior**
-
-#### Exemplo
-
-- Preço Atual: R$ 10,00
-- Concorrência: R$ 12,00
-- Espaço para aumento: R$ 2,00
-- Quantidade vendida no mês anterior: 1.000 unidades
-
-**Potencial de Captura = R$ 2,00 × 1.000 = R$ 2.000**
-
-Ou seja, existe uma oportunidade de gerar aproximadamente **R$ 2.000 adicionais** sem ultrapassar o preço da concorrência.
-
----
-
-### 📈 Composição do Índice Eirox
-
-**60% → Rentabilidade Atual**
-
-Representa a qualidade da margem do produto.
-
-**40% → Potencial de Captura**
-
-Representa o tamanho financeiro da oportunidade.
-
-#### Fórmula
-
-**Índice Eirox = (Rentabilidade Atual × 60%) + ((Potencial de Captura ÷ 1.000) × 40%)**
-
----
-
-### Como interpretar?
-
-🟢 **Acima de 70 pontos**
-
-- Produto altamente rentável.
-- Grande oportunidade de captura de resultado.
-
-🟡 **Entre 40 e 70 pontos**
-
-- Produto com potencial relevante de otimização.
-
-🔴 **Abaixo de 40 pontos**
-
-- Baixo impacto financeiro para ações de Pricing.
-
----
-
-### Resumo
-
-Quanto maior o Índice Eirox, maior a combinação entre:
-
-✔ Rentabilidade atual
-
-✔ Espaço para aumento de preço
-
-✔ Potencial financeiro de captura de resultado
-""")
+# V1.4.61: exibido no topo do Dashboard Geral para permanecer visível
+# também quando o usuário alterna para o Motor de Rentabilidade.
 
 
 # --------------------------------------------------
