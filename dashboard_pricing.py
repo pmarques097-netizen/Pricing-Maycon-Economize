@@ -6057,18 +6057,16 @@ def eirox_numero_engine_rec(df, opcoes, default=0):
 
 def aplicar_engine_recomendacoes_restaurada(df_base):
     """
-    Recalcula SEMPRE a recomendação, sem reaproveitar a coluna simplificada atual.
+    V1.4.54 — recomendações do Painel Geral calculadas sobre a mesma fonte
+    financeira do motor central.
 
-    Categorias oficiais do projeto antigo:
+    Categorias preservadas:
     - SUBIR PREÇO URGENTE
     - SUBIR PREÇO
     - MANTER
     - COMPETITIVO
     - ANALISAR REDUÇÃO
     - SEM CUSTO
-
-    A distribuição volta a depender da regra de negócio, e não apenas da coluna
-    simplificada que estava chegando com 2 ou 3 categorias.
     """
     try:
         if not isinstance(df_base, pd.DataFrame) or df_base.empty:
@@ -6076,179 +6074,125 @@ def aplicar_engine_recomendacoes_restaurada(df_base):
 
         df = df_base.copy()
 
-        custo = eirox_numero_engine_rec(
-            df,
-            [
-                "Custo",
-                "Custo Unitário",
-                "Custo_Unitario",
-                "Custo_Estoque_Unitario",
-                "Custo Médio Unitário",
-                "Custo Medio Unitario"
-            ],
-            0
+        # Fonte financeira única: aplica Preço Atual oficial, mercado e custo
+        # exatamente como nas telas de ação.
+        motor = eirox_motor_oportunidades(df)
+        if not isinstance(motor, pd.DataFrame) or motor.empty:
+            return df
+
+        motor = motor.reindex(df.index)
+
+        custo = pd.to_numeric(
+            motor.get("Custo_Unitario_Eirox", pd.Series(np.nan,index=df.index)),
+            errors="coerce"
         )
-
-        preco_atual = eirox_numero_engine_rec(
-            df,
-            [
-                "Preco_Atual",
-                "Preço Atual",
-                "Preco Atual",
-                "Preço_Atual",
-                "Preco_Selecionado",
-                "Preço Principal",
-                "Preco_Principal"
-            ],
-            0
+        preco_atual = pd.to_numeric(
+            motor.get("Preço_Atual_Eirox", pd.Series(np.nan,index=df.index)),
+            errors="coerce"
         )
-
-        preco_sugerido = eirox_numero_engine_rec(
-            df,
-            [
-                "Preco_Sugerido_Mercado",
-                "Preço Sugerido Mercado",
-                "Preco_Recomendado",
-                "Preço Recomendado",
-                "Preço Máximo Competitivo",
-                "Preco_Maximo_Competitivo",
-                "Preco_Maximo_Competitivo_Final",
-                "Preço_Sugerido_Cluster_2KM",
-                "Preço_Sugerido_Regra_Custo_2KM"
-            ],
-            0
+        referencia = pd.to_numeric(
+            motor.get("Preço_Mercado_Eirox", pd.Series(np.nan,index=df.index)),
+            errors="coerce"
         )
+        ganho_potencial = pd.to_numeric(
+            motor.get("Ganho_Lucro_Potencial_Eirox", pd.Series(0,index=df.index)),
+            errors="coerce"
+        ).fillna(0)
+        qtd_vendida = pd.to_numeric(
+            motor.get("Qtd_Vendida_Eirox", pd.Series(0,index=df.index)),
+            errors="coerce"
+        ).fillna(0)
 
-        menor_concorrente = eirox_numero_engine_rec(
-            df,
-            [
-                "Menor_Preco_Concorrente",
-                "Menor Preço Concorrente",
-                "Menor_Preco",
-                "Menor Preço",
-                "Menor_Preço",
-                "Menor_Preço_Concorrente_2KM"
-            ],
-            0
-        )
-
-        preco_medio = eirox_numero_engine_rec(
-            df,
-            [
-                "Preco_Medio",
-                "Preço Médio",
-                "Preço_Médio_Concorrente_2KM",
-                "Preco_Medio_Concorrente"
-            ],
-            0
-        )
-
-        ganho_potencial = eirox_numero_engine_rec(
-            df,
-            [
-                "Ganho_Potencial_Simulador",
-                "Ganho_Potencial",
-                "Ganho Potencial",
-                "Ganho Produto",
-                "Ganho_Produto",
-                "Ganho_Potencial_Final",
-                "Ganho_Potencial_Atualizado"
-            ],
-            0
-        )
-
-        qtd_vendida = eirox_numero_engine_rec(
-            df,
-            [
-                "Qtd Vendida Mês Anterior",
-                "Qtd_Vendida_Mes_Anterior",
-                "Quantidade",
-                "Qtd",
-                "Qtd_Pesquisas_Selecionado"
-            ],
-            0
-        )
-
-        # Referência de mercado prioritária.
-        referencia = preco_sugerido.copy()
-        referencia = referencia.where(referencia > 0, menor_concorrente)
-        referencia = referencia.where(referencia > 0, preco_medio)
-        referencia = referencia.where(referencia > 0, preco_atual)
-
-        # Diferença positiva indica que pode subir preço.
+        # Só há recomendação de preço quando existe preço atual válido.
         dif_referencia_rs = referencia - preco_atual
+        dif_referencia_pct = pd.Series(np.nan,index=df.index,dtype="float64")
+        mask_preco = preco_atual.gt(0) & referencia.gt(0)
+        dif_referencia_pct.loc[mask_preco] = (
+            dif_referencia_rs.loc[mask_preco] /
+            preco_atual.loc[mask_preco]
+        )
 
-        dif_referencia_pct = pd.Series(0.0, index=df.index)
-        mask_preco = preco_atual > 0
-        dif_referencia_pct.loc[mask_preco] = dif_referencia_rs.loc[mask_preco] / preco_atual.loc[mask_preco]
+        margem_atual = pd.Series(np.nan,index=df.index,dtype="float64")
+        mask_margem = preco_atual.gt(0) & custo.notna() & custo.ge(0)
+        margem_atual.loc[mask_margem] = (
+            (preco_atual.loc[mask_margem] - custo.loc[mask_margem]) /
+            preco_atual.loc[mask_margem]
+        )
 
-        margem_atual = pd.Series(0.0, index=df.index)
-        margem_atual.loc[mask_preco] = (preco_atual.loc[mask_preco] - custo.loc[mask_preco]) / preco_atual.loc[mask_preco]
+        margem_ref = pd.Series(np.nan,index=df.index,dtype="float64")
+        mask_ref = referencia.gt(0) & custo.notna() & custo.ge(0)
+        margem_ref.loc[mask_ref] = (
+            (referencia.loc[mask_ref] - custo.loc[mask_ref]) /
+            referencia.loc[mask_ref]
+        )
 
-        margem_ref = pd.Series(0.0, index=df.index)
-        mask_ref = referencia > 0
-        margem_ref.loc[mask_ref] = (referencia.loc[mask_ref] - custo.loc[mask_ref]) / referencia.loc[mask_ref]
-
-        rec = pd.Series("MANTER", index=df.index, dtype=object)
+        rec = pd.Series("MANTER",index=df.index,dtype=object)
 
         # 1) Sem custo prevalece.
-        rec.loc[custo <= 0] = "SEM CUSTO"
+        sem_custo = custo.isna() | custo.le(0)
+        rec.loc[sem_custo] = "SEM CUSTO"
 
-        # 2) Analisar redução: preço atual acima do mercado/referência.
+        # 2) Acima do mercado em 5% ou mais.
         rec.loc[
-            (custo > 0)
-            & (preco_atual > 0)
-            & (referencia > 0)
-            & (dif_referencia_pct <= -0.05)
+            ~sem_custo
+            & preco_atual.gt(0)
+            & referencia.gt(0)
+            & dif_referencia_pct.le(-0.05)
         ] = "ANALISAR REDUÇÃO"
 
-        # 3) Competitivo: preço atual muito próximo/abaixo do mercado, mas com margem.
+        # 3) Faixa competitiva: próximo da referência, com margem positiva.
         rec.loc[
-            (custo > 0)
-            & (preco_atual > 0)
-            & (margem_atual > 0)
-            & (dif_referencia_pct > -0.05)
-            & (dif_referencia_pct <= 0.025)
+            ~sem_custo
+            & preco_atual.gt(0)
+            & referencia.gt(0)
+            & margem_atual.gt(0)
+            & dif_referencia_pct.gt(-0.05)
+            & dif_referencia_pct.le(0.025)
         ] = "COMPETITIVO"
 
-        # 4) Subir preço: existe espaço para ganho.
+        # 4) Há espaço relevante para subir.
         rec.loc[
-            (custo > 0)
-            & (preco_atual > 0)
-            & (referencia > 0)
-            & (dif_referencia_pct > 0.025)
+            ~sem_custo
+            & preco_atual.gt(0)
+            & referencia.gt(0)
+            & dif_referencia_pct.gt(0.025)
         ] = "SUBIR PREÇO"
 
-        # 5) Subir urgente: alto gap, alto potencial ou alto volume.
+        # 5) Prioridade urgente: gap, ganho ou volume relevantes.
         rec.loc[
-            (custo > 0)
-            & (preco_atual > 0)
-            & (referencia > 0)
+            ~sem_custo
+            & preco_atual.gt(0)
+            & referencia.gt(0)
             & (
-                (dif_referencia_pct >= 0.10)
-                | ((dif_referencia_pct >= 0.06) & (ganho_potencial >= 1000))
-                | ((dif_referencia_pct >= 0.05) & (qtd_vendida >= 100))
-                | (ganho_potencial >= 3000)
+                dif_referencia_pct.ge(0.10)
+                | (dif_referencia_pct.ge(0.06) & ganho_potencial.ge(1000))
+                | (dif_referencia_pct.ge(0.05) & qtd_vendida.ge(100))
+                | ganho_potencial.ge(3000)
             )
         ] = "SUBIR PREÇO URGENTE"
 
-        # 6) Manter: alinhado, sem pressão e com margem positiva.
+        # 6) Alinhado e saudável: manter. Isso é mais restrito que COMPETITIVO.
         rec.loc[
-            (custo > 0)
-            & (preco_atual > 0)
-            & (referencia > 0)
-            & (dif_referencia_pct.abs() <= 0.025)
-            & (margem_atual >= 0.10)
+            ~sem_custo
+            & preco_atual.gt(0)
+            & referencia.gt(0)
+            & dif_referencia_pct.abs().le(0.01)
+            & margem_atual.ge(0.10)
         ] = "MANTER"
 
-        # 7) Se não tem referência real, mas tem custo/preço, manter.
+        # Sem referência de mercado, mas com preço e custo válidos: manter.
         rec.loc[
-            (custo > 0)
-            & (preco_atual > 0)
-            & (referencia <= 0)
+            ~sem_custo
+            & preco_atual.gt(0)
+            & (~referencia.gt(0))
         ] = "MANTER"
 
-        # Sanitiza categorias oficiais.
+        # Sem preço atual não deve virar artificialmente uma ação de preço.
+        rec.loc[
+            ~sem_custo
+            & (~preco_atual.gt(0))
+        ] = "MANTER"
+
         categorias = [
             "SUBIR PREÇO URGENTE",
             "SUBIR PREÇO",
@@ -6257,25 +6201,29 @@ def aplicar_engine_recomendacoes_restaurada(df_base):
             "ANALISAR REDUÇÃO",
             "SEM CUSTO"
         ]
-
         rec = rec.fillna("MANTER").astype(str).str.upper().str.strip()
-        rec = rec.where(rec.isin(categorias), "MANTER")
+        rec = rec.where(rec.isin(categorias),"MANTER")
 
         df["Recomendacao"] = rec
         df["Recomendação"] = rec
         df["Recomendacao_Oficial"] = rec
         df["Recomendação Oficial"] = rec
 
-        # Colunas auxiliares para auditoria da recomendação.
+        # Auditoria das regras.
+        df["Preco_Atual_Recomendacao"] = preco_atual
         df["Referencia_Mercado_Recomendacao"] = referencia
+        df["Custo_Recomendacao"] = custo
         df["Dif_Referencia_%"] = dif_referencia_pct
         df["Margem_Atual_Recomendacao"] = margem_atual
         df["Margem_Referencia_Recomendacao"] = margem_ref
+        df["Ganho_Potencial_Recomendacao"] = ganho_potencial
+        df["Qtd_Vendida_Recomendacao"] = qtd_vendida
 
         return df
 
     except Exception:
         return df_base
+
 
 
 def eirox_acoes_recomendadas_pricing_antigo():
@@ -8369,8 +8317,7 @@ def propagar_ganho_potencial(base):
 
 def preparar_ganho_oficial_dashboard(base):
     """
-    Usa exclusivamente o Ganho_Potencial da Analise_Pricing.xlsx.
-    Não usa simulacao_global, histórico ou fallback.
+    Mantém somente ganhos não negativos já reconciliados pelo motor atual.
     """
 
     base = base.copy()
@@ -8396,13 +8343,8 @@ def preparar_ganho_oficial_dashboard(base):
                 .eq("TOTAL GERAL")
             ].copy()
 
-    # Remove ganhos absurdos provocados por leitura/fallback indevido
-    base = base[
-        base["Ganho_Potencial"].between(
-            0,
-            10_000_000
-        )
-    ].copy()
+    # V1.4.55 — sem teto arbitrário: valores são validados pela origem financeira.
+    base = base[base["Ganho_Potencial"].ge(0)].copy()
 
     return base
 
@@ -12518,8 +12460,11 @@ def salvar_oportunidades(oportunidades_df):
 
 
 def gerar_motor_oportunidades(top_n=100, margem_minima=20, apenas_oportunidade_positiva=True):
+    """V1.4.55 — Motor de Oportunidades alinhado ao motor financeiro central."""
     try:
-        base = globals().get("df", pd.DataFrame())
+        base = globals().get("df_filtrado", pd.DataFrame())
+        if not isinstance(base, pd.DataFrame) or base.empty:
+            base = globals().get("df", pd.DataFrame())
         if not isinstance(base, pd.DataFrame) or base.empty:
             base = globals().get("base_pesquisa", pd.DataFrame())
         if not isinstance(base, pd.DataFrame) or base.empty:
@@ -12532,111 +12477,107 @@ def gerar_motor_oportunidades(top_n=100, margem_minima=20, apenas_oportunidade_p
         except Exception:
             pass
 
+        motor = eirox_motor_oportunidades(base)
+        if not isinstance(motor, pd.DataFrame) or motor.empty:
+            return pd.DataFrame()
+
         empresa_id = empresa_contexto_atual() if "empresa_contexto_atual" in globals() else "1"
         empresa_nome = obter_nome_empresa(empresa_id) if "obter_nome_empresa" in globals() else ""
 
-        col_ean = _oport_coluna(base, ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras"])
-        col_prod = _oport_coluna(base, ["Produto", "Produto_Base_SIM", "Descrição", "Descricao"])
-        col_lab = _oport_coluna(base, ["Laboratório", "Laboratorio", "Fabricante", "Fornecedor"])
-        col_cat = _oport_coluna(base, ["Categoria", "Família", "Familia", "Departamento", "Classe"])
-        col_ganho = _oport_coluna(base, ["Ganho_Potencial", "Potencial de Captura", "Oportunidade", "Potencial"])
-        col_fat = _oport_coluna(base, ["Faturamento", "Venda", "Receita", "Faturamento_Total"])
-        col_margem = _oport_coluna(base, ["Margem_%", "Margem", "Margem %"])
-        col_preco = _oport_coluna(base, ["Preco_Rede", "Preço Rede", "Preco_Venda", "Preço (R$)", "Preço"])
-        col_custo = _oport_coluna(base, ["Custo", "Custo Médio", "Custo_Medio", "Custo Atual"])
-        col_qtd = _oport_coluna(base, ["Quantidade", "Qtd", "Qtde", "Unidades", "Volume"])
-        col_estoque = _oport_coluna(base, ["Estoque", "Estoque Atual", "Qtde Estoque"])
-        col_conc = _oport_coluna(base, ["Menor_Preco_Concorrente", "Menor Concorrente", "Preco_Concorrente", "Preço Concorrente", "Menor_Preco"])
+        c_ean = _eirox_first_col(motor, ["EAN","EAN (GTIN)","GTIN","Código de Barras"])
+        c_prod = _eirox_first_col(motor, ["Produto","Produto_Base_SIM","Descrição","Descricao"])
+        c_lab = _eirox_first_col(motor, ["Laboratório","Laboratorio","Fabricante","Fornecedor"])
+        c_cat = _eirox_first_col(motor, ["Categoria","Família","Familia","Departamento","Classe"])
+        c_estoque = _eirox_first_col(motor, ["Estoque","Estoque Atual","Qtde Estoque","Quantidade Estoque"])
 
-        trabalho = pd.DataFrame(index=base.index)
-        trabalho["EmpresaID"] = empresa_id
-        trabalho["Empresa"] = empresa_nome
-        trabalho["EAN"] = base[col_ean].astype(str) if col_ean else ""
-        trabalho["Produto"] = base[col_prod].astype(str) if col_prod else ""
-        trabalho["Laboratório"] = base[col_lab].astype(str) if col_lab else "Não informado"
-        trabalho["Categoria"] = base[col_cat].astype(str) if col_cat else "Não informado"
+        rec = motor["Recomendacao_Central"].fillna("MANTER").astype(str)
+        preco = pd.to_numeric(motor["Preço_Atual_Eirox"],errors="coerce")
+        mercado = pd.to_numeric(motor["Preço_Mercado_Eirox"],errors="coerce")
+        custo = pd.to_numeric(motor["Custo_Unitario_Eirox"],errors="coerce")
+        qtd = pd.to_numeric(motor.get("Qtd_Vendida_Eirox",0),errors="coerce").fillna(0)
 
-        if col_ganho:
-            trabalho["Ganho_Potencial"] = _oport_converter_numero(base[col_ganho]).fillna(0)
-        else:
-            preco = _oport_converter_numero(base[col_preco]).fillna(0) if col_preco else pd.Series([0] * len(base), index=base.index)
-            qtd = _oport_converter_numero(base[col_qtd]).fillna(1) if col_qtd else pd.Series([1] * len(base), index=base.index)
-            margem = _oport_converter_numero(base[col_margem]).fillna(0) if col_margem else pd.Series([0] * len(base), index=base.index)
-            fator = 0.03
-            ajuste_margem = (float(margem_minima) - margem).clip(lower=0) / 100
-            trabalho["Ganho_Potencial"] = (preco * qtd * (fator + ajuste_margem)).fillna(0)
+        ganho = pd.Series(0.0,index=motor.index)
+        msub = rec.eq("SUBIR PREÇO")
+        if "Ganho_Lucro_Potencial_Eirox" in motor.columns:
+            ganho.loc[msub] = pd.to_numeric(
+                motor.loc[msub,"Ganho_Lucro_Potencial_Eirox"],errors="coerce"
+            ).fillna(0)
 
-        trabalho["Faturamento"] = _oport_converter_numero(base[col_fat]).fillna(0) if col_fat else 0
-        trabalho["Margem_%"] = _oport_converter_numero(base[col_margem]).fillna(0) if col_margem else 0
-        trabalho["Preço_Rede"] = _oport_converter_numero(base[col_preco]).fillna(0) if col_preco else 0
-        trabalho["Custo"] = _oport_converter_numero(base[col_custo]).fillna(0) if col_custo else 0
-        trabalho["Estoque"] = _oport_converter_numero(base[col_estoque]).fillna(0) if col_estoque else 0
-        trabalho["Preço_Concorrente"] = _oport_converter_numero(base[col_conc]).fillna(0) if col_conc else 0
+        mneg = rec.eq("NEGOCIAR COMPRA")
+        if "Impacto_Financeiro_Eirox" in motor.columns:
+            ganho.loc[mneg] = pd.to_numeric(
+                motor.loc[mneg,"Impacto_Financeiro_Eirox"],errors="coerce"
+            ).fillna(0)
 
-        def classificar(row):
-            ganho = float(row.get("Ganho_Potencial", 0) or 0)
-            margem = float(row.get("Margem_%", 0) or 0)
-            estoque = float(row.get("Estoque", 0) or 0)
-            preco = float(row.get("Preço_Rede", 0) or 0)
-            conc = float(row.get("Preço_Concorrente", 0) or 0)
-            if ganho > 0 and margem < float(margem_minima):
-                return "Recuperar margem"
-            if ganho > 0 and conc > 0 and preco > conc:
-                return "Revisar competitividade"
-            if ganho > 0 and estoque > 50:
-                return "Giro de estoque"
-            if ganho > 0:
-                return "Ganho potencial"
-            return "Monitorar"
+        out = pd.DataFrame(index=motor.index)
+        out["EmpresaID"] = empresa_id
+        out["Empresa"] = empresa_nome
+        out["EAN"] = motor[c_ean].astype(str) if c_ean else ""
+        out["Produto"] = motor[c_prod].astype(str) if c_prod else ""
+        out["Laboratório"] = motor[c_lab].astype(str) if c_lab else "Não informado"
+        out["Categoria"] = motor[c_cat].astype(str) if c_cat else "Não informado"
+        out["Ganho_Potencial"] = ganho.clip(lower=0)
+        out["Faturamento"] = (preco.fillna(0) * qtd).round(2)
+        out["Margem_Media"] = pd.to_numeric(motor["Margem_Atual_Eirox"],errors="coerce") * 100
+        out["Estoque_Total"] = pd.to_numeric(motor[c_estoque],errors="coerce").fillna(0) if c_estoque else 0
+        out["Preco_Medio"] = preco
+        out["Concorrente_Medio"] = mercado
+        out["Tipo_Oportunidade"] = rec.map({
+            "SUBIR PREÇO":"Ganho potencial",
+            "BAIXAR PREÇO":"Revisar competitividade",
+            "NEGOCIAR COMPRA":"Recuperar margem",
+            "SEM CUSTO":"Revisar cadastro",
+            "MANTER":"Monitorar",
+        }).fillna("Monitorar")
+        out["Ação_Sugerida"] = rec.map({
+            "SUBIR PREÇO":"Aumentar preço preservando competitividade.",
+            "BAIXAR PREÇO":"Revisar redução de preço preservando margem.",
+            "NEGOCIAR COMPRA":"Negociar custo com o fornecedor.",
+            "SEM CUSTO":"Sanear custo antes de recomendar preço.",
+            "MANTER":"Manter acompanhamento.",
+        }).fillna("Manter acompanhamento.")
 
-        trabalho["Tipo_Oportunidade"] = trabalho.apply(classificar, axis=1)
+        # Ganho positivo significa captura financeira; BAIXAR é impacto, não ganho.
+        if apenas_oportunidade_positiva:
+            out = out[out["Ganho_Potencial"].gt(0)].copy()
 
-        def acao(row):
-            tipo = row.get("Tipo_Oportunidade", "")
-            if tipo == "Recuperar margem":
-                return "Avaliar preço, custo e negociação com fornecedor."
-            if tipo == "Revisar competitividade":
-                return "Simular ajuste de preço com base no concorrente."
-            if tipo == "Giro de estoque":
-                return "Avaliar ação comercial para acelerar giro."
-            if tipo == "Ganho potencial":
-                return "Priorizar análise no simulador inteligente."
-            return "Manter acompanhamento."
-
-        trabalho["Ação_Sugerida"] = trabalho.apply(acao, axis=1)
-
-        agrup_cols = ["EmpresaID", "Empresa", "EAN", "Produto", "Laboratório", "Categoria"]
-        trabalho = (
-            trabalho.groupby(agrup_cols, dropna=False)
+        out = (
+            out.groupby(
+                ["EmpresaID","Empresa","EAN","Produto","Laboratório","Categoria"],
+                dropna=False
+            )
             .agg(
-                Ganho_Potencial=("Ganho_Potencial", "sum"),
-                Faturamento=("Faturamento", "sum"),
-                Margem_Media=("Margem_%", "mean"),
-                Estoque_Total=("Estoque", "sum"),
-                Preco_Medio=("Preço_Rede", "mean"),
-                Concorrente_Medio=("Preço_Concorrente", "mean"),
-                Tipo_Oportunidade=("Tipo_Oportunidade", "first"),
-                Ação_Sugerida=("Ação_Sugerida", "first")
+                Ganho_Potencial=("Ganho_Potencial","sum"),
+                Faturamento=("Faturamento","sum"),
+                Margem_Media=("Margem_Media","mean"),
+                Estoque_Total=("Estoque_Total","sum"),
+                Preco_Medio=("Preco_Medio","mean"),
+                Concorrente_Medio=("Concorrente_Medio","mean"),
+                Tipo_Oportunidade=("Tipo_Oportunidade","first"),
+                Ação_Sugerida=("Ação_Sugerida","first"),
             )
             .reset_index()
         )
+        out = out.sort_values("Ganho_Potencial",ascending=False)
+        if top_n is not None and int(top_n) > 0:
+            out = out.head(int(top_n))
+        out["Ranking"] = range(1,len(out)+1)
 
-        if apenas_oportunidade_positiva:
-            trabalho = trabalho[trabalho["Ganho_Potencial"] > 0]
-
-        trabalho = trabalho.sort_values("Ganho_Potencial", ascending=False).head(int(top_n))
-        trabalho["Ranking"] = range(1, len(trabalho) + 1)
-
-        cols = ["Ranking", "EmpresaID", "Empresa", "EAN", "Produto", "Laboratório", "Categoria", "Ganho_Potencial", "Faturamento", "Margem_Media", "Estoque_Total", "Preco_Medio", "Concorrente_Medio", "Tipo_Oportunidade", "Ação_Sugerida"]
-        return trabalho[cols].copy()
+        cols=[
+            "Ranking","EmpresaID","Empresa","EAN","Produto","Laboratório","Categoria",
+            "Ganho_Potencial","Faturamento","Margem_Media","Estoque_Total",
+            "Preco_Medio","Concorrente_Medio","Tipo_Oportunidade","Ação_Sugerida"
+        ]
+        return out[cols].copy()
 
     except Exception as erro:
         return pd.DataFrame([{
-            "Ranking": 1, "EmpresaID": empresa_contexto_atual() if "empresa_contexto_atual" in globals() else "1",
-            "Empresa": "", "EAN": "", "Produto": "", "Laboratório": "", "Categoria": "",
-            "Ganho_Potencial": 0, "Faturamento": 0, "Margem_Media": 0, "Estoque_Total": 0,
-            "Preco_Medio": 0, "Concorrente_Medio": 0, "Tipo_Oportunidade": "Erro", "Ação_Sugerida": str(erro)
+            "Ranking":1,"EmpresaID":"","Empresa":"","EAN":"","Produto":"",
+            "Laboratório":"","Categoria":"","Ganho_Potencial":0,"Faturamento":0,
+            "Margem_Media":0,"Estoque_Total":0,"Preco_Medio":0,"Concorrente_Medio":0,
+            "Tipo_Oportunidade":"Erro","Ação_Sugerida":str(erro)
         }])
+
 
 
 def enviar_oportunidades_telegram(oportunidades_df, limite_envio=10):
@@ -12645,17 +12586,22 @@ def enviar_oportunidades_telegram(oportunidades_df, limite_envio=10):
             return False, "Nenhuma oportunidade para enviar."
 
         top = oportunidades_df.head(int(limite_envio))
-        ganho_total = oportunidades_df_filtrado["Ganho_Potencial"].sum() if "Ganho_Potencial" in oportunidades_df.columns else 0
+        ganho_total = (
+            pd.to_numeric(oportunidades_df["Ganho_Potencial"],errors="coerce").fillna(0).sum()
+            if "Ganho_Potencial" in oportunidades_df.columns else 0
+        )
 
         linhas = []
         for _, row in top.iterrows():
-            linhas.append(f"• <b>{row.get('Produto', '')}</b> | R$ {_oport_numero_br(row.get('Ganho_Potencial', 0))}")
+            linhas.append(
+                f"• <b>{row.get('Produto','')}</b> | {eirox_brl(row.get('Ganho_Potencial',0), vazio='R$ 0,00')}"
+            )
 
         mensagem = (
             "💰 <b>Motor de Oportunidades Eirox</b>\n\n"
-            f"🏢 <b>Empresa:</b> {top.iloc[0].get('Empresa', '')}\n"
+            f"🏢 <b>Empresa:</b> {top.iloc[0].get('Empresa','')}\n"
             f"🎯 <b>Oportunidades:</b> {len(oportunidades_df)}\n"
-            f"💵 <b>Ganho potencial:</b> R$ {_oport_numero_br(ganho_total)}\n"
+            f"💵 <b>Ganho potencial:</b> {eirox_brl(ganho_total, vazio='R$ 0,00')}\n"
             f"🕒 <b>Horário:</b> {_oport_data_hora()}\n\n"
             + "\n".join(linhas)
             + f"\n\n🏷️ <b>Versão:</b> {VERSAO_APP}"
@@ -12665,6 +12611,7 @@ def enviar_oportunidades_telegram(oportunidades_df, limite_envio=10):
         return bool(ok), "Oportunidades enviadas ao Telegram." if ok else "Não foi possível enviar ao Telegram."
     except Exception as erro:
         return False, str(erro)
+
 
 
 def usuario_pode_ver_motor_oportunidades():
@@ -13244,14 +13191,7 @@ def gerar_ia_pricing_enterprise(margem_minima=25, margem_alvo=35, limite_reducao
             motor.loc[mask_outros, "Impacto_Financeiro_Eirox"], errors="coerce"
         ).fillna(0)
 
-        # Fallback histórico quando não houver volume, sem zerar oportunidade já calculada.
-        c_ganho_hist = _eirox_first_col(
-            motor,
-            ["Ganho_Potencial", "Ganho Potencial", "Ganho_Potencial_Final", "Ganho_Potencial_Atualizado", "Ganho Produto"]
-        )
-        if c_ganho_hist:
-            ganho_hist = pd.to_numeric(motor[c_ganho_hist], errors="coerce").fillna(0)
-            ganho = ganho.where(ganho.abs() > 0, ganho_hist)
+        # V1.4.55 — sem fallback histórico: IA usa apenas o motor financeiro atual.
 
         mapa_acao = {
             "SUBIR PREÇO": "Aumentar preço",
@@ -25580,17 +25520,24 @@ if pagina == "🏢 Dashboard Executivo":
         unsafe_allow_html=True
     )
 
-    base_exec = df_filtrado.copy()
-    base_exec = propagar_ganho_potencial(base_exec)
+    base_exec = aplicar_engine_recomendacoes_restaurada(df_filtrado.copy())
 
     total_produtos = len(base_exec)
 
-    ganho_total = 0
-    if "Ganho_Potencial" in base_exec.columns:
-        ganho_total = pd.to_numeric(
-            base_exec["Ganho_Potencial"],
-            errors="coerce"
-        ).fillna(0).sum()
+    # V1.4.55 — mesmo ganho de SUBIR PREÇO usado no Dashboard Geral.
+    try:
+        _sub_exec_v155 = eirox_v63_subidas_validas(df_filtrado.copy())
+        ganho_total = (
+            pd.to_numeric(
+                _sub_exec_v155["Ganho_Lucro_Potencial_Eirox"],
+                errors="coerce"
+            ).fillna(0).sum()
+            if isinstance(_sub_exec_v155, pd.DataFrame)
+            and not _sub_exec_v155.empty
+            else 0.0
+        )
+    except Exception:
+        ganho_total = 0.0
 
     margem_media = 0
     if "Margem_%" in base_exec.columns:
@@ -28638,16 +28585,20 @@ with c1:
 
     df_filtrado = aplicar_engine_recomendacoes_restaurada(df_filtrado)
 
-    rec = (
+    _ordem_rec_v154 = [
+        "SUBIR PREÇO URGENTE",
+        "SUBIR PREÇO",
+        "MANTER",
+        "COMPETITIVO",
+        "ANALISAR REDUÇÃO",
+        "SEM CUSTO"
+    ]
+    _cont_rec_v154 = (
         df_filtrado["Recomendacao"]
         .value_counts()
-        .reset_index()
+        .reindex(_ordem_rec_v154, fill_value=0)
     )
-
-    rec.columns = [
-        "Recomendacao",
-        "Quantidade"
-    ]
+    rec = _cont_rec_v154.rename_axis("Recomendacao").reset_index(name="Quantidade")
 
     # Exibe todas as recomendações oficiais no gráfico.
     rec_grafico = rec.copy()
