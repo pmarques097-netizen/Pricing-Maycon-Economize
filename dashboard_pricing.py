@@ -449,7 +449,7 @@ EIROX_CLIENT_PROFILES = {
         "brand": "Eirox",
         "product": "Eirox Pricing Enterprise",
         "page_title": "Eirox Pricing Enterprise",
-        "logo": EIROX_CLIENT_PROFILE["logo"],
+        "logo": "logo eirox.png",
         "admin_title": "Gestão Eirox",
         "about_page": "📌 Sobre o Eirox",
         "excel_brand": "EIROX PRICING ENTERPRISE",
