@@ -7965,8 +7965,8 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
         return df_pesquisa
 
 
-# V1.4.70 — PERFORMANCE PRIMEIRA ENTRADA: cálculo financeiro duplicado adiado no Dashboard inicial.
-VERSAO_APP = "Enterprise v1.4.47"
+# EIROX PRICING 2.0 — FASE 1: BASE ANALÍTICA PERSISTENTE + VIEWER LEVE.
+VERSAO_APP = "Enterprise 2.0 — Fase 1"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -16481,6 +16481,161 @@ def eirox_carregar_base_persistente(rotulo, assinatura, _loader):
         pass
     return obj
 
+
+# ==========================================================
+# EIROX PRICING 2.0 — FASE 1
+# BASE ANALÍTICA PERSISTENTE + VIEWER LEVE
+# ==========================================================
+def eirox_v200_cache_analitico_dir():
+    pasta = Path(__file__).resolve().parent / "_cache_pricing" / "analitico_v200"
+    pasta.mkdir(parents=True, exist_ok=True)
+    return pasta
+
+
+def eirox_v200_caminhos_base_analitica(assinatura_master):
+    chave = hashlib.sha256(str(assinatura_master).encode("utf-8")).hexdigest()[:28]
+    pasta = eirox_v200_cache_analitico_dir()
+    return (
+        pasta / f"base_analitica_{chave}.parquet",
+        pasta / f"base_analitica_{chave}.pkl",
+        pasta / f"metadata_{chave}.json",
+    )
+
+
+def eirox_v200_base_analitica_valida(base):
+    try:
+        return isinstance(base, pd.DataFrame) and not base.empty and "EAN" in base.columns
+    except Exception:
+        return False
+
+
+@st.cache_resource(show_spinner=False, max_entries=8)
+def eirox_v200_carregar_base_analitica(assinatura_master):
+    """Carrega a base pronta sem reconstruir o motor durante a navegação."""
+    parquet_path, pkl_path, _ = eirox_v200_caminhos_base_analitica(assinatura_master)
+    if parquet_path.exists():
+        try:
+            base = pd.read_parquet(parquet_path)
+            if eirox_v200_base_analitica_valida(base):
+                return base
+        except Exception:
+            pass
+    if pkl_path.exists():
+        try:
+            base = pd.read_pickle(pkl_path)
+            if eirox_v200_base_analitica_valida(base):
+                return base
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+
+def eirox_v200_salvar_base_analitica(
+    base,
+    assinatura_master,
+    assinatura_historico="",
+    assinatura_venda="",
+    assinatura_estoque="",
+    assinatura_compra="",
+):
+    """Publicação atômica: falha de atualização nunca substitui a última base válida."""
+    if not eirox_v200_base_analitica_valida(base):
+        return False
+
+    parquet_path, pkl_path, meta_path = eirox_v200_caminhos_base_analitica(assinatura_master)
+    pasta = parquet_path.parent
+    tmp_parquet = pasta / f".tmp_{parquet_path.name}"
+    tmp_pkl = pasta / f".tmp_{pkl_path.name}"
+    tmp_meta = pasta / f".tmp_{meta_path.name}"
+
+    salvo = False
+    formato = ""
+
+    try:
+        base.to_parquet(tmp_parquet, index=False)
+        os.replace(tmp_parquet, parquet_path)
+        salvo = True
+        formato = "PARQUET"
+        try:
+            pkl_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    except Exception:
+        try:
+            tmp_parquet.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    if not salvo:
+        try:
+            base.to_pickle(tmp_pkl)
+            os.replace(tmp_pkl, pkl_path)
+            salvo = True
+            formato = "PICKLE"
+        except Exception:
+            try:
+                tmp_pkl.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    if not salvo:
+        return False
+
+    try:
+        meta = {
+            "versao_arquitetura": "Eirox Pricing 2.0 — Fase 1",
+            "gerado_em": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+            "linhas": int(len(base)),
+            "colunas": int(len(base.columns)),
+            "formato": formato,
+            "assinatura_master": str(assinatura_master),
+            "assinatura_historico": str(assinatura_historico),
+            "assinatura_venda": str(assinatura_venda),
+            "assinatura_estoque": str(assinatura_estoque),
+            "assinatura_compra": str(assinatura_compra),
+        }
+        with open(tmp_meta, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_meta, meta_path)
+    except Exception:
+        try:
+            tmp_meta.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    try:
+        eirox_v200_carregar_base_analitica.clear()
+    except Exception:
+        pass
+    return True
+
+
+def eirox_v200_ler_metadata(assinatura_master):
+    try:
+        _, _, meta_path = eirox_v200_caminhos_base_analitica(assinatura_master)
+        if meta_path.exists():
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            return meta if isinstance(meta, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def eirox_v200_publicar_snapshot_atual(base):
+    try:
+        return eirox_v200_salvar_base_analitica(
+            base,
+            _eirox_sig_master,
+            _eirox_sig_historico,
+            _eirox_sig_venda,
+            _eirox_sig_estoque,
+            _eirox_sig_compra,
+        )
+    except Exception:
+        return False
+
+
 # --------------------------------------------------
 # DADOS
 # --------------------------------------------------
@@ -16501,6 +16656,17 @@ _eirox_sig_master = hashlib.sha256(
     ]).encode("utf-8")
 ).hexdigest()
 
+# Fase 1 — consulta primeiro a base analítica já pronta.
+_eirox_v200_forcar_rebuild = bool(
+    st.session_state.pop("eirox_v200_forcar_rebuild", False)
+)
+_eirox_snapshot_v200 = (
+    pd.DataFrame()
+    if _eirox_v200_forcar_rebuild
+    else eirox_v200_carregar_base_analitica(_eirox_sig_master)
+)
+_eirox_snapshot_usado_v200 = eirox_v200_base_analitica_valida(_eirox_snapshot_v200)
+
 
 @st.cache_data(show_spinner=False, max_entries=4)
 def carregar():
@@ -16509,7 +16675,7 @@ def carregar():
     except Exception:
         return pd.DataFrame()
 
-historico = eirox_carregar_base_persistente("historico", _eirox_sig_historico, carregar_historico).copy(deep=True)
+historico = eirox_carregar_base_persistente("historico", _eirox_sig_historico, carregar_historico)
 # V1.4.45 — guarda o estado REAL da primeira carga. No Streamlit Cloud,
 # arquivos .xls podem não ser lidos pelo loader primário e só entram pelos
 # fallbacks de compatibilidade abaixo. O motor mestre precisa ser reconstruído
@@ -16544,33 +16710,37 @@ try:
 except Exception:
     pass
 
-compra = eirox_carregar_base_persistente("compra", _eirox_sig_compra, carregar_compra).copy(deep=True)
+compra = eirox_carregar_base_persistente("compra", _eirox_sig_compra, carregar_compra)
 _eirox_primeira_compra_vazia = not isinstance(compra, pd.DataFrame) or compra.empty
 compra = eirox_classificar_base_cacheada(
     "Compra", _eirox_sig_compra, _eirox_sig_contexto, compra
 )
-venda_rede = eirox_carregar_base_persistente("venda", _eirox_sig_venda, carregar_venda_rede).copy(deep=True)
+venda_rede = eirox_carregar_base_persistente("venda", _eirox_sig_venda, carregar_venda_rede)
 _eirox_primeira_venda_vazia = not isinstance(venda_rede, pd.DataFrame) or venda_rede.empty
 venda_rede = eirox_classificar_base_cacheada(
     "Venda", _eirox_sig_venda, _eirox_sig_contexto, venda_rede
 )
-estoque = eirox_carregar_base_persistente("estoque", _eirox_sig_estoque, carregar_estoque).copy(deep=True)
+estoque = eirox_carregar_base_persistente("estoque", _eirox_sig_estoque, carregar_estoque)
 _eirox_primeira_estoque_vazia = not isinstance(estoque, pd.DataFrame) or estoque.empty
 estoque = eirox_classificar_base_cacheada(
     "Estoque", _eirox_sig_estoque, _eirox_sig_contexto, estoque
 )
 
-df = eirox_processar_base_master_cacheada(
-    _eirox_sig_historico,
-    _eirox_sig_compra,
-    _eirox_sig_venda,
-    _eirox_sig_estoque,
-    _eirox_sig_contexto,
-    historico,
-    compra,
-    venda_rede,
-    estoque,
-).copy(deep=False)
+if _eirox_snapshot_usado_v200:
+    df = _eirox_snapshot_v200.copy(deep=False)
+else:
+    df = eirox_processar_base_master_cacheada(
+        _eirox_sig_historico,
+        _eirox_sig_compra,
+        _eirox_sig_venda,
+        _eirox_sig_estoque,
+        _eirox_sig_contexto,
+        historico,
+        compra,
+        venda_rede,
+        estoque,
+    ).copy(deep=False)
+    eirox_v200_publicar_snapshot_atual(df)
 
 if historico.empty:
     historico = ler_base_pasta_ou_zip(
@@ -16682,7 +16852,7 @@ _eirox_cloud_precisou_fallback = any([
     _eirox_primeira_estoque_vazia,
 ])
 
-if _eirox_cloud_precisou_fallback:
+if _eirox_cloud_precisou_fallback and not _eirox_snapshot_usado_v200:
     try:
         # Aplica as mesmas camadas de preparação usadas na carga normal.
         if isinstance(historico, pd.DataFrame) and not historico.empty:
@@ -16717,13 +16887,15 @@ if _eirox_cloud_precisou_fallback:
             compra,
             venda_rede,
             estoque,
-        ).copy()
+        ).copy(deep=False)
+        eirox_v200_publicar_snapshot_atual(df)
     except Exception:
         # Segurança: nunca derruba o app por causa da camada de paridade.
         try:
             df = construir_base_pricing_somente_pastas(
                 historico, compra, venda_rede, estoque
             )
+            eirox_v200_publicar_snapshot_atual(df)
         except Exception:
             pass
 
@@ -17420,6 +17592,38 @@ if pagina is None:
 
 if pagina not in paginas_liberadas:
     pagina = paginas_liberadas[0]
+
+
+# Fase 1 — status da base pronta. Lê somente metadata JSON.
+try:
+    if usuario_master():
+        _meta_v200 = eirox_v200_ler_metadata(_eirox_sig_master)
+        with st.sidebar.expander("⚙️ Base Analítica 2.0", expanded=False):
+            if _meta_v200:
+                st.caption(f"Última geração: {_meta_v200.get('gerado_em', '—')}")
+                st.caption(f"Produtos/linhas: {_meta_v200.get('linhas', 0):,}".replace(",", "."))
+                st.caption(f"Formato: {_meta_v200.get('formato', '—')}")
+                st.success("Base analítica pronta")
+            else:
+                st.caption("A base será criada automaticamente na próxima preparação válida.")
+
+            if st.button(
+                "🔄 Reconstruir base analítica",
+                key="eirox_v200_reconstruir_base",
+                use_container_width=True,
+            ):
+                st.session_state["eirox_v200_forcar_rebuild"] = True
+                try:
+                    eirox_processar_base_master_cacheada.clear()
+                except Exception:
+                    pass
+                try:
+                    eirox_v200_carregar_base_analitica.clear()
+                except Exception:
+                    pass
+                st.rerun()
+except Exception:
+    pass
 
 registrar_pagina_acessada(pagina)
 
