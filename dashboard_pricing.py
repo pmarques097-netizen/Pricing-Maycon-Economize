@@ -7965,8 +7965,8 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
         return df_pesquisa
 
 
-# EIROX PRICING 2.0 — FASE 5: PLANO DE AÇÕES OPERACIONAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 6"
+# EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
+VERSAO_APP = "Enterprise 2.0 — Fase 7.1 — Preço Atual Oficial"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -16558,17 +16558,17 @@ def eirox_v210_aplicar_camada_oficial(base, historico_base=None, venda_base=None
         d["EAN_Oficial"] = ""
 
     # PREÇO + proveniência.
-    d["Preco_Atual_Oficial"] = eirox_v210_serie_numerica(
-        d,
-        [
-            "Preco_Ultima_Venda",
-            "Preço_Atual_Eirox",
-            "Preco_Atual",
-            "Preço Atual",
-            "Preço_Atual",
-            "Preco_Referencia_Calculo",
-        ],
+    # V7.1 — Preço Atual Oficial aceita somente a saída canônica:
+    # VENDA_TESTE Principal ou VENDA_FINAL_TESTE (Venda / Itens).
+    d["Preco_Atual_Oficial"] = pd.to_numeric(
+        d.get("Preco_Ultima_Venda", pd.Series(np.nan, index=d.index)),
+        errors="coerce",
     )
+    d.loc[
+        ~d["Preco_Atual_Oficial"].notna() | ~d["Preco_Atual_Oficial"].gt(0),
+        "Preco_Atual_Oficial"
+    ] = np.nan
+    d["Regra_Preco_Oficial_Versao"] = "V7.1-STRICT-20260909"
     d["Fonte_Preco_Oficial"] = eirox_v210_serie_texto(
         d,
         ["Fonte_Preço_Eirox", "Fonte_Preco_Principal", "Fonte_Preco"],
@@ -17880,6 +17880,161 @@ def eirox_v260_render(base):
     st.caption("Os registros ficam em SQLite local separado por contexto. Em hospedagem com disco efêmero, configure armazenamento persistente antes de utilizar como histórico definitivo.")
 
 
+
+# ==========================================================
+# EIROX PRICING 2.0 — FASE 7
+# NAVEGAÇÃO RÁPIDA + FILTROS CONSISTENTES + EXPORTAÇÃO GLOBAL
+# ==========================================================
+@st.cache_resource(show_spinner=False, max_entries=32)
+def eirox_v270_filtrar_base_cacheada(
+    assinatura_master,
+    chave_filtros,
+    _base,
+    laboratorios,
+    familias,
+    curvas,
+    busca,
+):
+    """Filtro leve reaproveitado entre trocas de tela com a mesma seleção."""
+    if not isinstance(_base, pd.DataFrame) or _base.empty:
+        return _base
+    d = _base
+    try:
+        if laboratorios and "Laboratório" in d.columns:
+            d = d[d["Laboratório"].isin(list(laboratorios))]
+        if familias and "Família" in d.columns:
+            d = d[d["Família"].isin(list(familias))]
+        if curvas and "CURVA" in d.columns:
+            d = d[d["CURVA"].isin(list(curvas))]
+        termo = str(busca or "").strip()
+        if termo:
+            mask = pd.Series(False, index=d.index)
+            if "Produto" in d.columns:
+                mask = mask | d["Produto"].astype(str).str.contains(
+                    termo, case=False, na=False, regex=False
+                )
+            if "EAN" in d.columns:
+                mask = mask | d["EAN"].astype(str).str.contains(
+                    termo, case=False, na=False, regex=False
+                )
+            d = d[mask]
+        return d.copy()
+    except Exception:
+        return _base.copy()
+
+
+def eirox_v270_resumo_analitico(base, pagina_atual):
+    """Resumo padronizado da seleção atual, sem recalcular regras comerciais."""
+    if not isinstance(base, pd.DataFrame):
+        base = pd.DataFrame()
+
+    def _num_col(cands):
+        for c in cands:
+            if c in base.columns:
+                return pd.to_numeric(base[c], errors="coerce")
+        return pd.Series(dtype="float64")
+
+    eans = 0
+    for c in ["EAN_Oficial", "EAN", "EAN (GTIN)", "GTIN"]:
+        if c in base.columns:
+            try:
+                eans = int(eirox_v210_normalizar_ean(base[c]).replace("", np.nan).nunique())
+            except Exception:
+                eans = int(base[c].nunique())
+            break
+
+    preco = _num_col(["Preco_Atual_Oficial", "Preço_Atual_Eirox", "Preco_Atual"])
+    custo = _num_col(["Custo_Oficial", "Custo"])
+    mercado = _num_col(["Preco_Mercado_Oficial", "Menor Preço Concorrente"])
+    volume = _num_col(["Volume_Oficial", "Itens_Mes_Fechado"])
+    ganho = _num_col(["Ganho_Potencial_Oficial", "Ganho_Potencial"])
+
+    linhas = [
+        ("Tela", str(pagina_atual)),
+        ("Registros filtrados", int(len(base))),
+        ("EANs distintos", eans),
+        ("Com preço válido", int(preco.gt(0).sum()) if not preco.empty else 0),
+        ("Com custo válido", int(custo.gt(0).sum()) if not custo.empty else 0),
+        ("Com mercado válido", int(mercado.gt(0).sum()) if not mercado.empty else 0),
+        ("Com volume válido", int(volume.gt(0).sum()) if not volume.empty else 0),
+        ("Ganho potencial disponível", float(ganho.fillna(0).sum()) if not ganho.empty else 0.0),
+        ("Gerado em", datetime.now().strftime("%d/%m/%Y %H:%M:%S")),
+    ]
+    return pd.DataFrame(linhas, columns=["Indicador", "Valor"])
+
+
+def eirox_v270_render_exportacao_global(base, pagina_atual, chave_filtros):
+    """
+    Exportação sob demanda: o Excel só é serializado após clique,
+    evitando custo desnecessário em cada troca de tela.
+    """
+    if not globals().get("pode_exportar", True):
+        return
+    if not isinstance(base, pd.DataFrame):
+        return
+
+    token = hashlib.sha256(
+        f"{globals().get('_eirox_sig_master','')}|{chave_filtros}|{pagina_atual}".encode("utf-8")
+    ).hexdigest()[:20]
+    key_dados = f"eirox_v270_excel_dados_{token}"
+    key_resumo = f"eirox_v270_excel_resumo_{token}"
+
+    with st.sidebar.expander("📤 Exportar esta seleção", expanded=False):
+        st.caption(str(pagina_atual))
+        st.caption(f"{len(base):,} registro(s) filtrado(s)".replace(",", "."))
+
+        if st.button(
+            "Preparar Excel detalhado",
+            key=f"eirox_v270_preparar_dados_{token}",
+            use_container_width=True,
+        ):
+            try:
+                st.session_state[key_dados] = eirox_excel_padrao_bytes(
+                    base,
+                    titulo=f"Eirox Pricing — {pagina_atual}",
+                    nome_aba="Dados",
+                )
+            except Exception as exc:
+                st.error(f"Não foi possível preparar o Excel: {exc}")
+
+        dados = st.session_state.get(key_dados)
+        if dados:
+            st.download_button(
+                "📊 Baixar Excel detalhado",
+                data=dados,
+                file_name=f"Eirox_{re.sub(r'[^A-Za-z0-9_-]+','_',str(pagina_atual)).strip('_')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"eirox_v270_download_dados_{token}",
+                use_container_width=True,
+            )
+
+        if st.button(
+            "Preparar resumo analítico",
+            key=f"eirox_v270_preparar_resumo_{token}",
+            use_container_width=True,
+        ):
+            try:
+                resumo = eirox_v270_resumo_analitico(base, pagina_atual)
+                st.session_state[key_resumo] = eirox_excel_padrao_bytes(
+                    resumo,
+                    titulo=f"Resumo Analítico — {pagina_atual}",
+                    nome_aba="Resumo",
+                )
+            except Exception as exc:
+                st.error(f"Não foi possível preparar o resumo: {exc}")
+
+        resumo_bytes = st.session_state.get(key_resumo)
+        if resumo_bytes:
+            st.download_button(
+                "📈 Baixar resumo analítico",
+                data=resumo_bytes,
+                file_name=f"Eirox_Resumo_{re.sub(r'[^A-Za-z0-9_-]+','_',str(pagina_atual)).strip('_')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"eirox_v270_download_resumo_{token}",
+                use_container_width=True,
+            )
+
+
 # ==========================================================
 # EIROX PRICING 2.0 — FASE 1
 # BASE ANALÍTICA PERSISTENTE + VIEWER LEVE
@@ -18150,6 +18305,11 @@ _eirox_precisou_camada_v210 = (
         or "Custo_Oficial" not in df.columns
         or "Preco_Mercado_Oficial" not in df.columns
         or "Volume_Oficial" not in df.columns
+        or "Regra_Preco_Oficial_Versao" not in df.columns
+        or not df.get(
+            "Regra_Preco_Oficial_Versao",
+            pd.Series("", index=df.index)
+        ).astype(str).eq("V7.1-STRICT-20260909").all()
     )
 )
 if _eirox_precisou_camada_v210:
@@ -19130,40 +19290,77 @@ if not pode_ver_margin:
         "🔒 Margem e custo restritos para este perfil."
     )
 
+# Fase 7 — telas de workflow não precisam executar o pipeline competitivo,
+# filtros por município, menor preço e enriquecimentos da navegação comercial.
+if pagina == "💰 Resultado Realizado":
+    eirox_v260_render(df)
+    st.stop()
+
+if pagina == "📋 Plano de Ações":
+    eirox_v250_render_plano_acoes(df)
+    st.stop()
+
+if pagina == "🧪 Central de Qualidade":
+    if not usuario_master():
+        st.error("Acesso restrito à administração.")
+        st.stop()
+    eirox_v240_render_central_qualidade(df)
+    st.stop()
+
 st.sidebar.markdown(
     '<div class="sidebar-section">Filtros Globais</div>',
     unsafe_allow_html=True
 )
 
+_lab_opts_v270 = sorted(df["Laboratório"].dropna().unique()) if "Laboratório" in df.columns else []
+_fam_opts_v270 = sorted(df["Família"].dropna().unique()) if "Família" in df.columns else []
+_curva_opts_v270 = sorted(df["CURVA"].dropna().unique()) if "CURVA" in df.columns else []
+
+# Remove valores antigos que não existem no contexto atual.
+for _k_v270, _opts_v270 in [
+    ("eirox_v270_filtro_lab", _lab_opts_v270),
+    ("eirox_v270_filtro_familia", _fam_opts_v270),
+    ("eirox_v270_filtro_curva", _curva_opts_v270),
+]:
+    if _k_v270 in st.session_state:
+        _validos_v270 = set(map(str, _opts_v270))
+        st.session_state[_k_v270] = [
+            x for x in st.session_state.get(_k_v270, [])
+            if str(x) in _validos_v270
+        ]
+
+if st.sidebar.button(
+    "🧹 Limpar filtros",
+    key="eirox_v270_limpar_filtros",
+    use_container_width=True,
+):
+    st.session_state["eirox_v270_filtro_lab"] = []
+    st.session_state["eirox_v270_filtro_familia"] = []
+    st.session_state["eirox_v270_filtro_curva"] = []
+    st.session_state["eirox_v270_filtro_busca"] = ""
+    st.rerun()
+
 laboratorio = st.sidebar.multiselect(
     "Laboratório",
-    sorted(
-        df["Laboratório"]
-        .dropna()
-        .unique()
-    )
+    _lab_opts_v270,
+    key="eirox_v270_filtro_lab",
 )
 
 familia = st.sidebar.multiselect(
     "Família",
-    sorted(
-        df["Família"]
-        .dropna()
-        .unique()
-    )
+    _fam_opts_v270,
+    key="eirox_v270_filtro_familia",
 )
 
 curva = st.sidebar.multiselect(
     "Curva",
-    sorted(
-        df["CURVA"]
-        .dropna()
-        .unique()
-    )
+    _curva_opts_v270,
+    key="eirox_v270_filtro_curva",
 )
 
 busca = st.sidebar.text_input(
-    "Produto ou EAN"
+    "Produto ou EAN",
+    key="eirox_v270_filtro_busca",
 )
 
 # --------------------------------------------------
@@ -19215,49 +19412,25 @@ df_filtrado = eirox_pipeline_municipio_cacheado(
 
 eirox_render_alertas_premium(df_filtrado)
 
-if laboratorio:
+_eirox_chave_filtro_leve_v270 = hashlib.sha256(
+    repr((
+        st.session_state.get("eirox_municipio_global", "Todos"),
+        tuple(sorted(map(str, laboratorio))) if laboratorio else (),
+        tuple(sorted(map(str, familia))) if familia else (),
+        tuple(sorted(map(str, curva))) if curva else (),
+        str(busca or ""),
+    )).encode("utf-8")
+).hexdigest()
 
-    df_filtrado = df_filtrado[
-        df_filtrado["Laboratório"]
-        .isin(laboratorio)
-    ]
-
-if familia:
-
-    df_filtrado = df_filtrado[
-        df_filtrado["Família"]
-        .isin(familia)
-    ]
-
-if curva:
-
-    df_filtrado = df_filtrado[
-        df_filtrado["CURVA"]
-        .isin(curva)
-    ]
-
-if busca:
-
-    df_filtrado = df_filtrado[
-        (
-            df_filtrado["Produto"]
-            .astype(str)
-            .str.contains(
-                busca,
-                case=False,
-                na=False
-            )
-        )
-        |
-        (
-            df_filtrado["EAN"]
-            .astype(str)
-            .str.contains(
-                busca,
-                na=False
-            )
-        )
-    ]
+df_filtrado = eirox_v270_filtrar_base_cacheada(
+    _eirox_sig_master,
+    _eirox_chave_filtro_leve_v270,
+    df_filtrado,
+    tuple(laboratorio or ()),
+    tuple(familia or ()),
+    tuple(curva or ()),
+    str(busca or ""),
+).copy()
 
 
 
@@ -20695,7 +20868,10 @@ def eirox_motor_oportunidades(base, margem_minima=EIROX_MARGEM_MINIMA_PADRAO):
         d.get("Preco_Referencia_Calculo", pd.Series(np.nan,index=d.index)),
         errors="coerce"
     )
-    calc = final.where(final.notna() & final.gt(0), ref)
+    # V7.1 — preço do motor é estritamente o preço canônico.
+    # Preco_Referencia_Calculo permanece somente para auditoria e nunca
+    # substitui a ausência de VENDA_TESTE / VENDA_FINAL_TESTE.
+    calc = final.where(final.notna() & final.gt(0), np.nan)
 
     temp = d.copy()
     temp["Preco_Ultima_Venda"] = calc
@@ -21339,6 +21515,8 @@ def eirox_tabela_oportunidades(base, acao=None, limite=500):
         default="ℹ️ REVISAR"
     )
     out["Preço Atual"] = motor["Preço_Atual_Eirox"].apply(_eirox_moeda_num)
+    # V7.1 — a tabela recebe novamente a fonte canônica por EAN.
+    out = eirox_v271_aplicar_preco_canonico_tabela(out)
     out["Preço Mercado"] = motor["Preço_Mercado_Eirox"].apply(_eirox_moeda_num)
 
     # -------------------------------------------------------
@@ -22202,6 +22380,103 @@ def eirox_v147_corrigir_lista_subir_final(tab):
     return out.reset_index(drop=True)
 
 
+
+# ==========================================================
+# EIROX PRICING 2.0 — V7.1
+# BARREIRA FINAL DO PREÇO ATUAL
+# ==========================================================
+# O Preço Atual pode ter somente duas origens:
+# 1) VENDA_TESTE — última pesquisa válida do CNPJ Principal;
+# 2) VENDA_FINAL_TESTE — Venda / Itens do último mês fechado com venda.
+# Sem uma dessas origens, o produto fica SEM PREÇO.
+_eirox_v147_legacy_corrigir_lista_subir_final = eirox_v147_corrigir_lista_subir_final
+
+def eirox_v271_mapa_preco_canonico():
+    try:
+        mapa = eirox_v146_preco_principal()
+        if not isinstance(mapa, pd.DataFrame) or mapa.empty:
+            return pd.DataFrame(columns=[
+                "EAN", "Preco_Principal_Final", "Fonte_Preco_Principal",
+                "Data_Ultima_Venda", "Mes_Fechado_Referencia"
+            ])
+        m = mapa.copy()
+        m["EAN"] = _ean(m["EAN"])
+        m["Preco_Principal_Final"] = pd.to_numeric(
+            m["Preco_Principal_Final"], errors="coerce"
+        )
+        m = m[
+            m["EAN"].ne("")
+            & m["Preco_Principal_Final"].notna()
+            & m["Preco_Principal_Final"].gt(0)
+        ].drop_duplicates("EAN", keep="last")
+        return m
+    except Exception:
+        return pd.DataFrame(columns=[
+            "EAN", "Preco_Principal_Final", "Fonte_Preco_Principal",
+            "Data_Ultima_Venda", "Mes_Fechado_Referencia"
+        ])
+
+
+def eirox_v271_aplicar_preco_canonico_tabela(tab):
+    if not isinstance(tab, pd.DataFrame) or tab.empty or "EAN" not in tab.columns:
+        return tab
+
+    out = tab.copy()
+    mapa = eirox_v271_mapa_preco_canonico()
+    keys = _ean(out["EAN"])
+
+    if isinstance(mapa, pd.DataFrame) and not mapa.empty:
+        lk = mapa.set_index("EAN")
+        preco = keys.map(lk["Preco_Principal_Final"])
+        fonte = keys.map(lk["Fonte_Preco_Principal"]).fillna("SEM PREÇO")
+        data = keys.map(lk["Data_Ultima_Venda"])
+        mes = keys.map(lk["Mes_Fechado_Referencia"])
+    else:
+        preco = pd.Series(np.nan, index=out.index, dtype="float64")
+        fonte = pd.Series("SEM PREÇO", index=out.index, dtype="object")
+        data = pd.Series(pd.NaT, index=out.index)
+        mes = pd.Series("", index=out.index, dtype="object")
+
+    # Sobrescreve qualquer preço visual/calculado legado. Não há terceiro fallback.
+    if "Preço Atual" in out.columns:
+        out["Preço Atual"] = [
+            _eirox_moeda_num(v) if pd.notna(v) and float(v) > 0 else ""
+            for v in preco
+        ]
+
+    out["Fonte Preço Atual"] = fonte.map({
+        "ÚLTIMA VENDA": "VENDA_TESTE — ÚLTIMA PESQUISA PRINCIPAL",
+        "ÚLTIMO MÊS FECHADO": "VENDA_FINAL_TESTE — ÚLTIMO MÊS FECHADO",
+        "SEM PREÇO": "SEM PREÇO",
+    }).fillna("SEM PREÇO")
+
+    out["Data/Competência Preço"] = [
+        (
+            d.strftime("%d/%m/%Y %H:%M:%S")
+            if str(f) == "ÚLTIMA VENDA" and pd.notna(d)
+            else (
+                str(m)
+                if str(f) == "ÚLTIMO MÊS FECHADO"
+                and pd.notna(m)
+                and str(m).strip().lower() not in {"", "nan", "nat", "none"}
+                else ""
+            )
+        )
+        for f, d, m in zip(fonte, data, mes)
+    ]
+    return out
+
+
+def eirox_v147_corrigir_lista_subir_final(tab):
+    # Mantém apenas os enriquecimentos visuais legados que não definem a
+    # verdade do preço; ao final, a barreira canônica sobrescreve Preço Atual.
+    try:
+        out = _eirox_v147_legacy_corrigir_lista_subir_final(tab)
+    except Exception:
+        out = tab.copy() if isinstance(tab, pd.DataFrame) else tab
+    return eirox_v271_aplicar_preco_canonico_tabela(out)
+
+
 def eirox_v63_tabela_subidas(base):
     # V1.4.46 — a lista SUBIR PREÇO usa a MESMA referência atômica de
     # menor preço/loja/data já validada nas demais telas. O enriquecimento
@@ -22249,6 +22524,7 @@ def eirox_v63_tabela_subidas(base):
     out["Preço Atual"] = motor["Preço_Atual_Eirox"].apply(
         lambda x: _eirox_moeda_num(x) if pd.notna(x) and float(x) > 0 else ""
     )
+    out = eirox_v271_aplicar_preco_canonico_tabela(out)
     out["Preço Ref. Cálculo"] = motor["Preço_Base_Calculo_Eirox"].apply(
         lambda x: _eirox_moeda_num(x) if pd.notna(x) and float(x) > 0 else ""
     )
@@ -22669,6 +22945,16 @@ df_filtrado = eirox_v142_data_final_unica(
     df_filtrado,
     historico if "historico" in globals() else None
 )
+
+# Fase 7 — exportação padronizada e sob demanda da seleção atual.
+try:
+    eirox_v270_render_exportacao_global(
+        df_filtrado,
+        pagina,
+        globals().get("_eirox_chave_filtros", globals().get("_eirox_chave_filtro_leve_v270", "")),
+    )
+except Exception:
+    pass
 
 # TELAS CENTRAIS - PROPOSTA VISUAL APROVADA
 # --------------------------------------------------
