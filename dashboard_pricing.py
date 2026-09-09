@@ -7965,8 +7965,8 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
         return df_pesquisa
 
 
-# EIROX PRICING 2.0 — FASE 3: ÍNDICE EXECUTIVO + QUALIDADE SEPARADA.
-VERSAO_APP = "Enterprise 2.0 — Fase 3"
+# EIROX PRICING 2.0 — FASE 4: CENTRAL DE QUALIDADE DE DADOS.
+VERSAO_APP = "Enterprise 2.0 — Fase 4"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -14411,7 +14411,7 @@ def filtrar_paginas_por_plano(paginas):
 
         plano = plano_empresa_contexto()
 
-        admin_pages = ['🏁 Release Candidate', '🏢 CRM Enterprise', '🏢 Multiempresa', '👥 Controle de Usuários', '💳 Billing Enterprise', '💼 Licenciamento Multiempresa', '💼 Licenciamento Real', '📌 Sobre o Eirox', '📦 Backup Center', '🔐 Central de Auditoria', '🟢 Saúde do Sistema', '🧪 Diagnóstico', '🧭 Roadmap do Produto']
+        admin_pages = ['🏁 Release Candidate', '🏢 CRM Enterprise', '🏢 Multiempresa', '👥 Controle de Usuários', '💳 Billing Enterprise', '💼 Licenciamento Multiempresa', '💼 Licenciamento Real', '📌 Sobre o Eirox', '📦 Backup Center', '🔐 Central de Auditoria', '🟢 Saúde do Sistema', '🧪 Central de Qualidade', '🧪 Diagnóstico', '🧭 Roadmap do Produto']
 
         # Garante que todas as páginas de cliente existentes entrem no menu conforme o plano.
         todas_paginas_cliente = ["⚖️ Cliente x Principal Concorrente", '🏢 Portal do Cliente', '📋 Workflow Comercial', '🤖 IA Pricing Enterprise', '🏢 Dashboard Executivo', '🌎 Mapa Geográfico de Concorrência', '🔎 Rede/Loja vs Concorrentes']
@@ -16748,6 +16748,354 @@ def eirox_v210_camada_oficial_cacheada(
     )
 
 
+
+# ==========================================================
+# EIROX PRICING 2.0 — FASE 4
+# CENTRAL DE QUALIDADE DE DADOS
+# ==========================================================
+def eirox_v240_coluna_existente(base, candidatos):
+    if not isinstance(base, pd.DataFrame):
+        return None
+    mapa = {
+        re.sub(r"[^a-z0-9]", "", str(c).lower()): c
+        for c in base.columns
+    }
+    for cand in candidatos:
+        k = re.sub(r"[^a-z0-9]", "", str(cand).lower())
+        if k in mapa:
+            return mapa[k]
+    return None
+
+
+def eirox_v240_preparar_qualidade(base):
+    """
+    Fila operacional de qualidade.
+    Prioridade objetiva: maior faturamento do último mês fechado associado
+    ao EAN pendente; em empate, maior quantidade de pilares ausentes.
+    """
+    if not isinstance(base, pd.DataFrame) or base.empty:
+        return pd.DataFrame()
+
+    d = base.copy()
+
+    c_ean = eirox_v240_coluna_existente(
+        d, ["EAN_Oficial", "EAN", "EAN (GTIN)", "GTIN", "Código de Barras"]
+    )
+    c_prod = eirox_v240_coluna_existente(
+        d, ["Produto", "Descrição", "Descricao", "Nome Produto"]
+    )
+    c_fab = eirox_v240_coluna_existente(
+        d, ["Fabricante", "Laboratório", "Laboratorio", "Marca"]
+    )
+    c_curva = eirox_v240_coluna_existente(
+        d, ["CURVA", "Curva", "Curva ABC", "Classificação ABC", "Classificacao ABC"]
+    )
+    c_familia = eirox_v240_coluna_existente(
+        d, ["Família", "Familia", "Classificação", "Classificacao"]
+    )
+
+    out = pd.DataFrame(index=d.index)
+    out["EAN"] = (
+        eirox_v210_normalizar_ean(d[c_ean])
+        if c_ean else d.index.astype(str)
+    )
+    out["Produto"] = d[c_prod].fillna("").astype(str).str.strip() if c_prod else ""
+    out["Fabricante"] = d[c_fab].fillna("").astype(str).str.strip() if c_fab else ""
+    out["Curva"] = d[c_curva].fillna("").astype(str).str.strip() if c_curva else ""
+    out["Família"] = d[c_familia].fillna("").astype(str).str.strip() if c_familia else ""
+
+    out["Preço Atual"] = pd.to_numeric(
+        d.get("Preco_Atual_Oficial", np.nan), errors="coerce"
+    )
+    out["Fonte Preço"] = d.get(
+        "Fonte_Preco_Oficial", pd.Series("", index=d.index)
+    ).fillna("").astype(str)
+
+    out["Custo"] = pd.to_numeric(
+        d.get("Custo_Oficial", np.nan), errors="coerce"
+    )
+    out["Fonte Custo"] = d.get(
+        "Fonte_Custo_Oficial_2_0", pd.Series("", index=d.index)
+    ).fillna("").astype(str)
+    out["Motivo Custo"] = d.get(
+        "Motivo_Custo_Oficial", pd.Series("", index=d.index)
+    ).fillna("").astype(str)
+
+    out["Menor Preço Concorrente"] = pd.to_numeric(
+        d.get("Preco_Mercado_Oficial", np.nan), errors="coerce"
+    )
+    out["Loja Menor Preço"] = d.get(
+        "Loja_Mercado_Oficial", pd.Series("", index=d.index)
+    ).fillna("").astype(str)
+    out["Data Pesquisa"] = d.get(
+        "Data_Mercado_Oficial", pd.Series("", index=d.index)
+    ).fillna("").astype(str)
+
+    out["Volume Último Mês"] = pd.to_numeric(
+        d.get("Volume_Oficial", np.nan), errors="coerce"
+    )
+    out["Competência Volume"] = d.get(
+        "Mes_Volume_Oficial", pd.Series("", index=d.index)
+    ).fillna("").astype(str)
+
+    out["Faturamento Último Mês"] = pd.to_numeric(
+        d.get("Faturamento_Mes_Oficial", np.nan), errors="coerce"
+    ).fillna(0)
+
+    out["Cobertura %"] = pd.to_numeric(
+        d.get("Cobertura_Dado_Oficial_%", np.nan), errors="coerce"
+    )
+
+    ok_preco = out["Preço Atual"].notna() & out["Preço Atual"].gt(0)
+    ok_custo = out["Custo"].notna() & out["Custo"].gt(0)
+    ok_mercado = (
+        out["Menor Preço Concorrente"].notna()
+        & out["Menor Preço Concorrente"].gt(0)
+    )
+    ok_volume = out["Volume Último Mês"].notna() & out["Volume Último Mês"].gt(0)
+
+    faltas = pd.DataFrame({
+        "PREÇO": ~ok_preco,
+        "CUSTO": ~ok_custo,
+        "MERCADO": ~ok_mercado,
+        "VOLUME": ~ok_volume,
+    }, index=out.index)
+
+    out["Qtd Pendências"] = faltas.sum(axis=1).astype(int)
+    out["Pendências"] = faltas.apply(
+        lambda r: "; ".join([c for c, v in r.items() if bool(v)]),
+        axis=1,
+    )
+    out["Status"] = np.where(out["Qtd Pendências"].eq(0), "COMPLETO", "PENDENTE")
+
+    out["Faturamento Associado à Pendência"] = np.where(
+        out["Qtd Pendências"].gt(0),
+        out["Faturamento Último Mês"],
+        0.0,
+    )
+
+    out = (
+        out.sort_index(kind="stable")
+        .drop_duplicates("EAN", keep="first")
+        .reset_index(drop=True)
+    )
+
+    return out.sort_values(
+        ["Faturamento Associado à Pendência", "Qtd Pendências", "Produto"],
+        ascending=[False, False, True],
+        kind="stable",
+    ).reset_index(drop=True)
+
+
+@st.cache_resource(show_spinner=False, max_entries=8)
+def eirox_v240_preparar_qualidade_cacheada(
+    assinatura_master,
+    assinatura_contexto,
+    _base,
+):
+    return eirox_v240_preparar_qualidade(_base)
+
+
+def eirox_v240_render_central_qualidade(base):
+    st.markdown("## 🧪 Central de Qualidade de Dados")
+    st.caption(
+        "Fila operacional das pendências de preço, custo, mercado e volume. "
+        "A ordenação usa o faturamento do último mês fechado associado a cada EAN."
+    )
+
+    q = eirox_v240_preparar_qualidade_cacheada(
+        globals().get("_eirox_sig_master", ""),
+        globals().get("_eirox_sig_contexto", ""),
+        base,
+    ).copy(deep=False)
+
+    if not isinstance(q, pd.DataFrame) or q.empty:
+        st.info("Não há base oficial disponível para auditar.")
+        return
+
+    pend = q[q["Status"].eq("PENDENTE")].copy()
+    total = int(len(q))
+    completos = int(q["Status"].eq("COMPLETO").sum())
+    pendentes = int(len(pend))
+    cobertura = (completos / total * 100.0) if total else 0.0
+    fat_pend = (
+        float(pd.to_numeric(
+            pend["Faturamento Associado à Pendência"], errors="coerce"
+        ).fillna(0).sum())
+        if pendentes else 0.0
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Produtos auditados", f"{total:,}".replace(",", "."))
+    c2.metric("Completos", f"{completos:,}".replace(",", "."))
+    c3.metric("Com pendência", f"{pendentes:,}".replace(",", "."))
+    c4.metric("Cobertura completa", f"{cobertura:.1f}%".replace(".", ","))
+
+    st.metric(
+        "Faturamento do último mês associado a produtos com pendência",
+        moeda_br(fat_pend),
+    )
+    st.caption(
+        "Esse valor não representa perda nem ganho potencial. "
+        "É o faturamento real do último mês fechado vinculado aos EANs incompletos."
+    )
+
+    if pendentes == 0:
+        st.success("✅ Todos os produtos auditados possuem os quatro pilares oficiais.")
+        return
+
+    resumo = pd.DataFrame([
+        {
+            "Pendência": nome,
+            "Produtos": int(pend["Pendências"].str.contains(nome, regex=False).sum()),
+            "Faturamento associado": float(
+                pd.to_numeric(
+                    pend.loc[
+                        pend["Pendências"].str.contains(nome, regex=False),
+                        "Faturamento Associado à Pendência"
+                    ],
+                    errors="coerce"
+                ).fillna(0).sum()
+            ),
+        }
+        for nome in ["PREÇO", "CUSTO", "MERCADO", "VOLUME"]
+    ])
+    resumo = resumo[resumo["Produtos"].gt(0)].sort_values(
+        ["Faturamento associado", "Produtos"],
+        ascending=[False, False],
+        kind="stable",
+    )
+
+    st.markdown("### Onde estão as maiores pendências")
+    eirox_dataframe_brl(resumo, use_container_width=True, hide_index=True)
+
+    st.markdown("### Fila de correção")
+    f1, f2, f3, f4 = st.columns(4)
+
+    tipos_disponiveis = [
+        x for x in ["PREÇO", "CUSTO", "MERCADO", "VOLUME"]
+        if pend["Pendências"].str.contains(x, regex=False).any()
+    ]
+    tipo_sel = f1.multiselect(
+        "Tipo de pendência", tipos_disponiveis, default=[],
+        key="eirox_v240_f_tipo"
+    )
+
+    fabricantes = sorted(
+        [x for x in pend["Fabricante"].dropna().astype(str).unique() if x.strip()]
+    )
+    fab_sel = f2.multiselect(
+        "Fabricante", fabricantes, default=[],
+        key="eirox_v240_f_fab"
+    )
+
+    curvas = sorted(
+        [x for x in pend["Curva"].dropna().astype(str).unique() if x.strip()]
+    )
+    curva_sel = f3.multiselect(
+        "Curva", curvas, default=[],
+        key="eirox_v240_f_curva"
+    )
+
+    busca = f4.text_input(
+        "EAN ou produto", value="",
+        key="eirox_v240_f_busca",
+        placeholder="Digite para localizar",
+    ).strip()
+
+    filtrado = pend.copy()
+
+    if tipo_sel:
+        mask = pd.Series(False, index=filtrado.index)
+        for t in tipo_sel:
+            mask = mask | filtrado["Pendências"].str.contains(t, regex=False)
+        filtrado = filtrado[mask].copy()
+
+    if fab_sel:
+        filtrado = filtrado[filtrado["Fabricante"].isin(fab_sel)].copy()
+
+    if curva_sel:
+        filtrado = filtrado[filtrado["Curva"].isin(curva_sel)].copy()
+
+    if busca:
+        b = busca.casefold()
+        filtrado = filtrado[
+            filtrado["EAN"].astype(str).str.casefold().str.contains(b, regex=False)
+            | filtrado["Produto"].astype(str).str.casefold().str.contains(b, regex=False)
+        ].copy()
+
+    filtrado = filtrado.sort_values(
+        ["Faturamento Associado à Pendência", "Qtd Pendências", "Produto"],
+        ascending=[False, False, True],
+        kind="stable",
+    )
+
+    fc1, fc2 = st.columns(2)
+    fc1.metric(
+        "Produtos na fila filtrada",
+        f"{len(filtrado):,}".replace(",", "."),
+    )
+    fc2.metric(
+        "Faturamento associado à fila",
+        moeda_br(float(pd.to_numeric(
+            filtrado["Faturamento Associado à Pendência"], errors="coerce"
+        ).fillna(0).sum()) if not filtrado.empty else 0.0),
+    )
+
+    cols = [
+        "EAN", "Produto", "Fabricante", "Curva", "Família",
+        "Pendências", "Qtd Pendências",
+        "Preço Atual", "Fonte Preço",
+        "Custo", "Fonte Custo", "Motivo Custo",
+        "Menor Preço Concorrente", "Loja Menor Preço", "Data Pesquisa",
+        "Volume Último Mês", "Competência Volume",
+        "Faturamento Último Mês",
+        "Faturamento Associado à Pendência",
+        "Cobertura %",
+    ]
+    cols = [c for c in cols if c in filtrado.columns]
+
+    if filtrado.empty:
+        st.info("Nenhum produto atende aos filtros selecionados.")
+    else:
+        eirox_dataframe_brl(
+            filtrado[cols],
+            use_container_width=True,
+            hide_index=True,
+            height=560,
+        )
+
+        if globals().get("pode_exportar", True):
+            eirox_botao_excel_padrao(
+                filtrado[cols],
+                titulo="Central de Qualidade de Dados — Eirox Pricing",
+                arquivo="Eirox_Central_Qualidade_Dados.xlsx",
+                key="eirox_v240_exportar_qualidade",
+                use_container_width=True,
+            )
+
+    if pend["Fabricante"].astype(str).str.strip().ne("").any():
+        rank = (
+            pend.assign(
+                Fabricante=pend["Fabricante"].fillna("").astype(str).str.strip()
+            )
+            .loc[lambda x: x["Fabricante"].ne("")]
+            .groupby("Fabricante", as_index=False)
+            .agg(
+                Produtos_com_pendência=("EAN", "nunique"),
+                Faturamento_associado=("Faturamento Associado à Pendência", "sum"),
+            )
+            .sort_values(
+                ["Faturamento_associado", "Produtos_com_pendência"],
+                ascending=[False, False],
+                kind="stable",
+            )
+        )
+        if not rank.empty:
+            st.markdown("### Pendências por fabricante")
+            eirox_dataframe_brl(rank, use_container_width=True, hide_index=True)
+
+
 # ==========================================================
 # EIROX PRICING 2.0 — FASE 1
 # BASE ANALÍTICA PERSISTENTE + VIEWER LEVE
@@ -17880,6 +18228,11 @@ if "📊 Dashboard Geral" in paginas_liberadas:
             paginas_liberadas.remove(_pg)
         paginas_liberadas.insert(_idx_dashboard, _pg)
 
+
+
+# Fase 4 — Central de Qualidade: ferramenta administrativa.
+if "🧪 Central de Qualidade" not in paginas_liberadas:
+    paginas_liberadas.append("🧪 Central de Qualidade")
 
 paginas_cliente_menu, paginas_admin_menu = dividir_menu_cliente_admin(paginas_liberadas)
 
@@ -21528,6 +21881,14 @@ df_filtrado = eirox_v142_data_final_unica(
 
 # TELAS CENTRAIS - PROPOSTA VISUAL APROVADA
 # --------------------------------------------------
+if pagina == "🧪 Central de Qualidade":
+    if not usuario_master():
+        st.error("Acesso restrito à administração.")
+        st.stop()
+    eirox_v240_render_central_qualidade(df)
+    st.stop()
+
+
 if pagina == "🎯 Prioridade de Pesquisa":
     eirox_render_prioridade_pesquisa(df_filtrado)
     st.stop()
