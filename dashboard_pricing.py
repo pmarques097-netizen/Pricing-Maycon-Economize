@@ -7965,8 +7965,8 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
         return df_pesquisa
 
 
-# EIROX PRICING 2.0 — FASE 1: BASE ANALÍTICA PERSISTENTE + VIEWER LEVE.
-VERSAO_APP = "Enterprise 2.0 — Fase 1"
+# EIROX PRICING 2.0 — FASE 2: CAMADA OFICIAL DE DADOS + RASTREABILIDADE.
+VERSAO_APP = "Enterprise 2.0 — Fase 2"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -16482,6 +16482,272 @@ def eirox_carregar_base_persistente(rotulo, assinatura, _loader):
     return obj
 
 
+
+# ==========================================================
+# EIROX PRICING 2.0 — FASE 2
+# CAMADA OFICIAL DE DADOS E REGRAS
+# ==========================================================
+def eirox_v210_serie_numerica(base, nomes):
+    s = pd.Series(np.nan, index=base.index, dtype="float64")
+    for nome in nomes:
+        if nome in base.columns:
+            atual = pd.to_numeric(base[nome], errors="coerce")
+            s = s.where(s.notna() & s.gt(0), atual)
+    return s
+
+
+def eirox_v210_serie_texto(base, nomes, padrao=""):
+    s = pd.Series("", index=base.index, dtype="object")
+    for nome in nomes:
+        if nome in base.columns:
+            atual = base[nome].fillna("").astype(str).str.strip()
+            s = s.where(s.astype(str).str.strip().ne(""), atual)
+    if padrao:
+        s = s.where(s.astype(str).str.strip().ne(""), padrao)
+    return s
+
+
+def eirox_v210_normalizar_ean(serie):
+    return (
+        serie.fillna("").astype(str)
+        .str.replace(".0", "", regex=False)
+        .str.replace(r"\D", "", regex=True)
+        .str.strip()
+    )
+
+
+def eirox_v210_aplicar_camada_oficial(base, historico_base=None, venda_base=None):
+    """
+    Camada única e rastreável de verdade do Pricing.
+
+    Não cria novas regras comerciais. Apenas consolida as regras já aprovadas:
+      Preço: VENDA_TESTE Principal -> último mês fechado com venda.
+      Custo: ESTOQUE_TESTE -> VENDA_FINAL_TESTE.
+      Mercado: menor concorrente com preço/loja/data da mesma ocorrência.
+      Volume: último mês fechado com venda por EAN.
+      Recomendação/Ganho: preserva o motor central vigente.
+    """
+    if not isinstance(base, pd.DataFrame) or base.empty:
+        return base
+
+    d = base.copy()
+
+    # 1) PREÇO OFICIAL — reutiliza o motor canônico já existente.
+    try:
+        d = eirox_v143_aplicar_preco(d)
+    except Exception:
+        pass
+
+    # 2) MERCADO OFICIAL — mantém preço, loja e data da mesma ocorrência.
+    try:
+        d = eirox_enriquecer_menor_preco_concorrente(
+            d,
+            historico_base=historico_base,
+        )
+    except Exception:
+        pass
+
+    # EAN oficial.
+    ce = eirox_coluna_generica(
+        d,
+        ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras"]
+    )
+    if ce:
+        d["EAN_Oficial"] = eirox_v210_normalizar_ean(d[ce])
+    else:
+        d["EAN_Oficial"] = ""
+
+    # PREÇO + proveniência.
+    d["Preco_Atual_Oficial"] = eirox_v210_serie_numerica(
+        d,
+        [
+            "Preco_Ultima_Venda",
+            "Preço_Atual_Eirox",
+            "Preco_Atual",
+            "Preço Atual",
+            "Preço_Atual",
+            "Preco_Referencia_Calculo",
+        ],
+    )
+    d["Fonte_Preco_Oficial"] = eirox_v210_serie_texto(
+        d,
+        ["Fonte_Preço_Eirox", "Fonte_Preco_Principal", "Fonte_Preco"],
+        "SEM PREÇO",
+    )
+    d["Data_Preco_Oficial"] = eirox_v210_serie_texto(
+        d,
+        ["Data_Ultima_Venda", "Data Última Venda", "Data_Preco"],
+        "",
+    )
+    # Quando o preço vem do fechamento mensal, a competência é a referência.
+    _mes_preco = eirox_v210_serie_texto(
+        d,
+        ["Mes_Fechado_Referencia", "Mês Fechado Referência"],
+        "",
+    )
+    _sem_data_preco = d["Data_Preco_Oficial"].astype(str).str.strip().isin(
+        ["", "NaT", "nan", "None"]
+    )
+    d.loc[_sem_data_preco, "Data_Preco_Oficial"] = _mes_preco.loc[_sem_data_preco]
+
+    # CUSTO + proveniência. O valor de Custo já passou pela regra oficial V1.4.68.
+    d["Custo_Oficial"] = eirox_v210_serie_numerica(
+        d,
+        ["Custo", "Custo_Unitario_Eirox", "Custo Unitário", "Custo_Unitario"],
+    )
+    d["Fonte_Custo_Oficial_2_0"] = eirox_v210_serie_texto(
+        d,
+        ["Fonte_Custo"],
+        "SEM CUSTO",
+    )
+    d["Motivo_Custo_Oficial"] = eirox_v210_serie_texto(
+        d,
+        ["Motivo_Sem_Custo"],
+        "",
+    )
+    d["Mes_Custo_Oficial"] = eirox_v210_serie_texto(
+        d,
+        ["Mes_Custo_Venda"],
+        "",
+    )
+
+    # MERCADO + ocorrência vencedora.
+    d["Preco_Mercado_Oficial"] = eirox_v210_serie_numerica(
+        d,
+        ["Menor Preço Concorrente", "Menor_Preco_Concorrente", "Menor Preço"],
+    )
+    d["Loja_Mercado_Oficial"] = eirox_v210_serie_texto(
+        d,
+        ["Loja do Menor Preço", "Loja_Menor_Preco", "Rede Menor Preço"],
+        "",
+    )
+    d["Data_Mercado_Oficial"] = eirox_v210_serie_texto(
+        d,
+        ["Data da Pesquisa", "Data Pesquisa", "Data_Pesquisa"],
+        "",
+    )
+    d["Fonte_Mercado_Oficial"] = np.where(
+        pd.to_numeric(d["Preco_Mercado_Oficial"], errors="coerce").gt(0),
+        "VENDA_TESTE — CONCORRENTE",
+        "SEM PREÇO CONCORRENTE",
+    )
+
+    # 3) VOLUME OFICIAL — último mês fechado com venda por EAN.
+    try:
+        mapa_volume = eirox_v158_ultimo_mes_fechado_memoria(
+            venda_base if isinstance(venda_base, pd.DataFrame) else pd.DataFrame()
+        )
+    except Exception:
+        mapa_volume = pd.DataFrame()
+
+    if (
+        isinstance(mapa_volume, pd.DataFrame)
+        and not mapa_volume.empty
+        and "EAN" in mapa_volume.columns
+    ):
+        mv = mapa_volume.copy()
+        mv["_EAN_V210"] = eirox_v210_normalizar_ean(mv["EAN"])
+        mv = mv.drop_duplicates("_EAN_V210", keep="last")
+        mapa_qtd = mv.set_index("_EAN_V210")["Itens_Mes_Fechado"]
+        mapa_venda = mv.set_index("_EAN_V210")["Venda_Mes_Fechado"]
+        mapa_mes = mv.set_index("_EAN_V210")["Mes_Fechado_Referencia"]
+
+        d["Volume_Oficial"] = d["EAN_Oficial"].map(mapa_qtd)
+        d["Faturamento_Mes_Oficial"] = d["EAN_Oficial"].map(mapa_venda)
+        d["Mes_Volume_Oficial"] = d["EAN_Oficial"].map(mapa_mes).fillna("")
+    else:
+        d["Volume_Oficial"] = np.nan
+        d["Faturamento_Mes_Oficial"] = np.nan
+        d["Mes_Volume_Oficial"] = ""
+
+    d["Fonte_Volume_Oficial"] = np.where(
+        pd.to_numeric(d["Volume_Oficial"], errors="coerce").gt(0),
+        "VENDA_FINAL_TESTE — ÚLTIMO MÊS FECHADO",
+        "SEM VOLUME FECHADO",
+    )
+
+    # 4) RECOMENDAÇÃO E GANHO — sem criar threshold novo.
+    d["Recomendacao_Oficial"] = eirox_v210_serie_texto(
+        d,
+        [
+            "Recomendacao_Central",
+            "Recomendação Central",
+            "Recomendacao",
+            "Recomendação",
+        ],
+        "",
+    )
+    d["Ganho_Potencial_Oficial"] = eirox_v210_serie_numerica(
+        d,
+        [
+            "Ganho_Potencial_Final",
+            "Ganho_Potencial_Atualizado",
+            "Ganho_Potencial_Simulador",
+            "Ganho_Potencial",
+        ],
+    ).fillna(0)
+
+    # 5) Qualidade/rastreabilidade — nenhum produto desaparece.
+    preco_ok = pd.to_numeric(d["Preco_Atual_Oficial"], errors="coerce").gt(0)
+    custo_ok = pd.to_numeric(d["Custo_Oficial"], errors="coerce").gt(0)
+    mercado_ok = pd.to_numeric(d["Preco_Mercado_Oficial"], errors="coerce").gt(0)
+    volume_ok = pd.to_numeric(d["Volume_Oficial"], errors="coerce").gt(0)
+
+    pendencias = pd.Series("", index=d.index, dtype="object")
+    pendencias = pendencias + np.where(preco_ok, "", "PREÇO; ")
+    pendencias = pendencias + np.where(custo_ok, "", "CUSTO; ")
+    pendencias = pendencias + np.where(mercado_ok, "", "MERCADO; ")
+    pendencias = pendencias + np.where(volume_ok, "", "VOLUME; ")
+    pendencias = pendencias.str.replace(r"; $", "", regex=True)
+
+    d["Status_Dado_Oficial"] = np.where(
+        preco_ok & custo_ok & mercado_ok & volume_ok,
+        "COMPLETO",
+        "PENDENTE",
+    )
+    d["Pendencias_Dado_Oficial"] = pendencias
+
+    d["Cobertura_Dado_Oficial_%"] = (
+        (
+            preco_ok.astype(int)
+            + custo_ok.astype(int)
+            + mercado_ok.astype(int)
+            + volume_ok.astype(int)
+        ) / 4 * 100
+    ).round(0)
+
+    # Métricas derivadas somente quando preço/custo oficiais existem.
+    d["Lucro_Unitario_Oficial"] = np.where(
+        preco_ok & custo_ok,
+        d["Preco_Atual_Oficial"] - d["Custo_Oficial"],
+        np.nan,
+    )
+    d["Margem_Oficial_%"] = np.where(
+        preco_ok & custo_ok,
+        (d["Lucro_Unitario_Oficial"] / d["Preco_Atual_Oficial"]) * 100,
+        np.nan,
+    )
+
+    return d
+
+
+@st.cache_resource(show_spinner=False, max_entries=8)
+def eirox_v210_camada_oficial_cacheada(
+    assinatura_master,
+    assinatura_historico,
+    assinatura_venda,
+    assinatura_contexto,
+    _base,
+    _historico,
+    _venda,
+):
+    return eirox_v210_aplicar_camada_oficial(
+        _base,
+        historico_base=_historico,
+        venda_base=_venda,
+    )
+
+
 # ==========================================================
 # EIROX PRICING 2.0 — FASE 1
 # BASE ANALÍTICA PERSISTENTE + VIEWER LEVE
@@ -16742,6 +17008,30 @@ else:
     ).copy(deep=False)
     eirox_v200_publicar_snapshot_atual(df)
 
+# Fase 2 — consolida a camada oficial. Snapshots antigos da Fase 1 são
+# enriquecidos uma única vez e republicados já com rastreabilidade completa.
+_eirox_precisou_camada_v210 = (
+    isinstance(df, pd.DataFrame)
+    and not df.empty
+    and (
+        "Preco_Atual_Oficial" not in df.columns
+        or "Custo_Oficial" not in df.columns
+        or "Preco_Mercado_Oficial" not in df.columns
+        or "Volume_Oficial" not in df.columns
+    )
+)
+if _eirox_precisou_camada_v210:
+    df = eirox_v210_camada_oficial_cacheada(
+        _eirox_sig_master,
+        _eirox_sig_historico,
+        _eirox_sig_venda,
+        _eirox_sig_contexto,
+        df,
+        historico,
+        venda_rede,
+    ).copy(deep=False)
+    eirox_v200_publicar_snapshot_atual(df)
+
 if historico.empty:
     historico = ler_base_pasta_ou_zip(
         ["VENDA_TESTE"],
@@ -16888,6 +17178,15 @@ if _eirox_cloud_precisou_fallback and not _eirox_snapshot_usado_v200:
             venda_rede,
             estoque,
         ).copy(deep=False)
+        df = eirox_v210_camada_oficial_cacheada(
+            _eirox_sig_master,
+            _eirox_sig_historico,
+            _eirox_sig_venda,
+            _eirox_sig_contexto,
+            df,
+            historico,
+            venda_rede,
+        ).copy(deep=False)
         eirox_v200_publicar_snapshot_atual(df)
     except Exception:
         # Segurança: nunca derruba o app por causa da camada de paridade.
@@ -16895,6 +17194,15 @@ if _eirox_cloud_precisou_fallback and not _eirox_snapshot_usado_v200:
             df = construir_base_pricing_somente_pastas(
                 historico, compra, venda_rede, estoque
             )
+            df = eirox_v210_camada_oficial_cacheada(
+                _eirox_sig_master,
+                _eirox_sig_historico,
+                _eirox_sig_venda,
+                _eirox_sig_contexto,
+                df,
+                historico,
+                venda_rede,
+            ).copy(deep=False)
             eirox_v200_publicar_snapshot_atual(df)
         except Exception:
             pass
@@ -17622,6 +17930,31 @@ try:
                 except Exception:
                     pass
                 st.rerun()
+except Exception:
+    pass
+
+
+# Fase 2 — diagnóstico enxuto da verdade oficial.
+try:
+    if usuario_master() and isinstance(df, pd.DataFrame) and not df.empty:
+        with st.sidebar.expander("🧭 Camada Oficial de Dados", expanded=False):
+            _tot_v210 = int(len(df))
+            _completo_v210 = int(
+                df.get(
+                    "Status_Dado_Oficial",
+                    pd.Series("", index=df.index)
+                ).astype(str).eq("COMPLETO").sum()
+            )
+            _pct_v210 = (
+                (_completo_v210 / _tot_v210 * 100)
+                if _tot_v210 else 0
+            )
+            st.caption("Preço: VENDA_TESTE → último mês fechado")
+            st.caption("Custo: ESTOQUE_TESTE → VENDA_FINAL_TESTE")
+            st.caption("Mercado: menor concorrente + mesma loja/data")
+            st.caption("Volume: último mês fechado por EAN")
+            st.metric("Cobertura completa", f"{_pct_v210:.1f}%".replace(".", ","))
+            st.caption(f"{_completo_v210:,} de {_tot_v210:,} registros completos".replace(",", "."))
 except Exception:
     pass
 
