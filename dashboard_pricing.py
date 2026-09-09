@@ -435,8 +435,85 @@ from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+
+# ==========================================================
+# EIROX PRICING 2.0 — FASE 8
+# NÚCLEO MULTI-CLIENTE + PERFIL CENTRALIZADO
+# ==========================================================
+EIROX_CORE_VERSION = "2.0.8"
+EIROX_CORE_RULESET_ID = "EIROX-CORE-2.0.8-STRICT-PRICE-V7.1"
+
+EIROX_CLIENT_PROFILES = {
+    "carceres": {
+        "key": "carceres",
+        "brand": "Eirox",
+        "product": "Eirox Pricing Enterprise",
+        "page_title": "Eirox Pricing Enterprise",
+        "logo": EIROX_CLIENT_PROFILE["logo"],
+        "admin_title": "Gestão Eirox",
+        "about_page": "📌 Sobre o Eirox",
+        "excel_brand": "EIROX PRICING ENTERPRISE",
+        "data_dirs": {
+            "historico": "VENDA_TESTE",
+            "venda": "VENDA_FINAL_TESTE",
+            "estoque": "ESTOQUE_TESTE",
+            "compra": "COMPRA_TESTE",
+        },
+    },
+    "insightfarma": {
+        "key": "insightfarma",
+        "brand": "InsightFarma",
+        "product": "InsightFarma Pricing Enterprise",
+        "page_title": "InsightFarma Pricing Enterprise",
+        "logo": "logo insightfarma.png",
+        "admin_title": "Gestão InsightFarma",
+        "about_page": "📌 Sobre a InsightFarma",
+        "excel_brand": "INSIGHTFARMA PRICING ENTERPRISE",
+        "data_dirs": {
+            "historico": "VENDA_TESTE",
+            "venda": "VENDA_FINAL_TESTE",
+            "estoque": "ESTOQUE_TESTE",
+            "compra": "COMPRA_TESTE",
+        },
+    },
+}
+
+EIROX_CLIENT_KEY = "carceres"
+EIROX_CLIENT_PROFILE = EIROX_CLIENT_PROFILES[EIROX_CLIENT_KEY]
+
+
+def eirox_v280_profile():
+    """Fonte única de branding/configuração do cliente neste deploy standalone."""
+    return EIROX_CLIENT_PROFILE
+
+
+def eirox_v280_core_signature():
+    payload = {
+        "core": EIROX_CORE_VERSION,
+        "ruleset": EIROX_CORE_RULESET_ID,
+        "client": EIROX_CLIENT_PROFILE["key"],
+        "data_dirs": EIROX_CLIENT_PROFILE["data_dirs"],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def eirox_v280_core_manifest():
+    return {
+        "Núcleo": EIROX_CORE_VERSION,
+        "Ruleset": EIROX_CORE_RULESET_ID,
+        "Cliente": EIROX_CLIENT_PROFILE["key"],
+        "Produto": EIROX_CLIENT_PROFILE["product"],
+        "Preço Atual": "VENDA_TESTE Principal → VENDA_FINAL_TESTE último mês fechado",
+        "Custo": "ESTOQUE_TESTE → VENDA_FINAL_TESTE",
+        "Mercado": "VENDA_TESTE concorrente, ocorrência atômica",
+        "Volume": "VENDA_FINAL_TESTE, último mês fechado por EAN",
+    }
+
+
 st.set_page_config(
-    page_title="Eirox Pricing Enterprise",
+    page_title=EIROX_CLIENT_PROFILE["page_title"],
     layout="wide"
 )
 
@@ -5576,7 +5653,7 @@ def eirox_excel_padrao_bytes(df, titulo="Exportação Eirox", nome_aba="Dados"):
         # título
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
         c = ws.cell(1, 1)
-        c.value = f"EIROX PRICING ENTERPRISE | {titulo}"
+        c.value = f"{EIROX_CLIENT_PROFILE['excel_brand']} | {titulo}"
         c.font = Font(color=white, bold=True, size=16)
         c.fill = PatternFill("solid", fgColor=bg_title)
         c.alignment = Alignment(horizontal="left", vertical="center")
@@ -7966,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 7.1 — Preço Atual Oficial"
+VERSAO_APP = "Enterprise 2.0 — Fase 8 — Multi-Cliente"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -11422,7 +11499,7 @@ def _backup_arquivos_alvo():
         "dashboard_pricing.py",
         "pricing_utils.py",
         "style.css",
-        "logo eirox.png",
+        EIROX_CLIENT_PROFILE["logo"],
         "IGNORADO_Analise_Pricing.xlsx",
         "VENDA_TESTE",
         "VENDA_FINAL_TESTE",
@@ -16089,7 +16166,7 @@ def tela_login():
         try:
             _login_logo_cols = st.columns([1.0, 1.55, 1.0])
             with _login_logo_cols[1]:
-                st.image("logo eirox.png", use_container_width=True)
+                st.image(EIROX_CLIENT_PROFILE["logo"], use_container_width=True)
         except Exception:
             pass
 
@@ -16270,7 +16347,7 @@ st.download_button = download_button_controlado
 try:
 
     st.image(
-        "logo eirox.png",
+        EIROX_CLIENT_PROFILE["logo"],
     )
 
 except:
@@ -18201,6 +18278,9 @@ _eirox_sig_contexto = eirox_assinatura_contexto_performance()
 _eirox_sig_geo = eirox_assinatura_geo_performance()
 _eirox_sig_master = hashlib.sha256(
     "||".join([
+        EIROX_CORE_RULESET_ID,
+        EIROX_CLIENT_PROFILE["key"],
+        eirox_v280_core_signature(),
         _eirox_sig_historico,
         _eirox_sig_compra,
         _eirox_sig_venda,
@@ -18634,7 +18714,7 @@ if isinstance(simulacao_global, pd.DataFrame) and not simulacao_global.empty:
 try:
 
     st.sidebar.image(
-        "logo eirox.png",
+        EIROX_CLIENT_PROFILE["logo"],
     )
 
 except Exception:
@@ -19259,6 +19339,19 @@ try:
             st.caption("Volume: último mês fechado por EAN")
             st.metric("Cobertura completa", f"{_pct_v210:.1f}%".replace(".", ","))
             st.caption(f"{_completo_v210:,} de {_tot_v210:,} registros completos".replace(",", "."))
+except Exception:
+    pass
+
+# Fase 8 — status do núcleo compartilhado e perfil ativo.
+try:
+    if usuario_master():
+        with st.sidebar.expander("🧩 Núcleo Multi-Cliente", expanded=False):
+            _manifest_v280 = eirox_v280_core_manifest()
+            st.caption(f"Núcleo: {_manifest_v280['Núcleo']}")
+            st.caption(f"Ruleset: {_manifest_v280['Ruleset']}")
+            st.caption(f"Cliente ativo: {_manifest_v280['Cliente']}")
+            st.caption(f"Produto: {_manifest_v280['Produto']}")
+            st.success("Regras financeiras compartilhadas")
 except Exception:
     pass
 
