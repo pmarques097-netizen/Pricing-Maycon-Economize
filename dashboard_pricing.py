@@ -7966,7 +7966,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 5: PLANO DE AÇÕES OPERACIONAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 5"
+VERSAO_APP = "Enterprise 2.0 — Fase 6"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -17640,6 +17640,246 @@ def eirox_v250_render_plano_acoes(base):
     )
 
 
+
+# ==========================================================
+# EIROX PRICING 2.0 — FASE 6
+# EXECUÇÃO REGISTRADA E RESULTADO REALIZADO
+# ==========================================================
+def eirox_v260_db():
+    import sqlite3
+    p = eirox_v250_workflow_dir() / f"realizado_{eirox_v250_contexto_chave()}.sqlite3"
+    con = sqlite3.connect(str(p), timeout=30)
+    con.execute("PRAGMA busy_timeout=30000")
+    con.execute("""CREATE TABLE IF NOT EXISTS execucoes (
+        id TEXT PRIMARY KEY, acao_id TEXT NOT NULL, ean TEXT NOT NULL,
+        tipo TEXT NOT NULL, executado_em TEXT NOT NULL,
+        preco_anterior REAL, preco_executado REAL,
+        custo_anterior REAL, custo_executado REAL,
+        potencial_identificado REAL, volume_referencia REAL,
+        competencia_referencia TEXT, usuario TEXT, observacao TEXT,
+        criado_em TEXT NOT NULL)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS apuracoes (
+        id TEXT PRIMARY KEY, execucao_id TEXT NOT NULL,
+        competencia TEXT NOT NULL, quantidade REAL, venda REAL,
+        custo_total REAL, preco_medio REAL, custo_unitario REAL,
+        resultado_realizado REAL, status TEXT, motivo TEXT,
+        apurado_em TEXT NOT NULL, UNIQUE(execucao_id, competencia))""")
+    return con
+
+
+def eirox_v260_num(v):
+    try:
+        x = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
+        return float(x) if pd.notna(x) and np.isfinite(x) else None
+    except Exception:
+        return None
+
+
+def eirox_v260_registrar(acao, data, preco, custo, observacao):
+    import uuid
+    from datetime import datetime as _dt
+    if not isinstance(acao, dict) or not acao.get("ID_Acao"):
+        raise ValueError("Selecione uma ação válida.")
+    if str(acao.get("Status", "")) == "CANCELADO":
+        raise ValueError("Uma ação cancelada não pode ser executada.")
+    tipo = str(acao.get("Tipo_Acao", ""))
+    pa = eirox_v260_num(acao.get("Preco_Atual"))
+    ca = eirox_v260_num(acao.get("Custo_Oficial_Referencia"))
+    pe = eirox_v260_num(preco)
+    ce = eirox_v260_num(custo)
+    if tipo == "AJUSTAR PREÇO" and (pe is None or pe <= 0):
+        raise ValueError("Informe o preço efetivamente implantado.")
+    if tipo == "NEGOCIAR CUSTO" and (ce is None or ce <= 0):
+        raise ValueError("Informe o custo efetivamente negociado.")
+    if tipo == "REVISAR MERCADO" and pe is None and ce is None:
+        raise ValueError("Informe o resultado da revisão antes de registrar a execução.")
+    if tipo == "AJUSTAR PREÇO" and pa is None:
+        raise ValueError("Preço anterior não disponível. Atualize a referência antes de executar.")
+    if tipo == "NEGOCIAR CUSTO" and ca is None:
+        raise ValueError("Custo anterior não disponível. Atualize a referência antes de executar.")
+    data_exec = pd.to_datetime(data, errors="coerce")
+    if pd.isna(data_exec) or data_exec.date() > _dt.now().date():
+        raise ValueError("Informe uma data efetiva válida, não futura.")
+    agora = _dt.now().isoformat(timespec="seconds")
+    eid = uuid.uuid4().hex
+    with eirox_v260_db() as con:
+        con.execute("""INSERT INTO execucoes VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+            eid, str(acao["ID_Acao"]), str(acao["EAN"]), tipo,
+            str(data), pa, pe, ca, ce,
+            eirox_v260_num(acao.get("Potencial_Identificado")),
+            eirox_v260_num(acao.get("Volume_Oficial_Referencia")),
+            str(acao.get("Mes_Volume_Oficial_Referencia", "")),
+            eirox_v250_usuario_atual(), str(observacao or ""), agora
+        ))
+    return eid
+
+
+def eirox_v260_ler(tabela):
+    if tabela not in ("execucoes", "apuracoes"):
+        raise ValueError("Tabela inválida.")
+    with eirox_v260_db() as con:
+        return pd.read_sql_query("SELECT * FROM " + tabela, con)
+
+
+def eirox_v260_historico_mensal(vendas):
+    """Histórico mensal agregado, preservando competência e custo total."""
+    cols = ["EAN", "competencia", "quantidade", "venda", "custo_total"]
+    if not isinstance(vendas, pd.DataFrame) or vendas.empty:
+        return pd.DataFrame(columns=cols)
+    b = vendas.copy()
+    def col(cands):
+        return eirox_v240_coluna_existente(b, cands)
+    ce = col(["EAN", "EAN (GTIN)", "GTIN", "Cód. Barras/Etiq.", "Código de Barras"])
+    cq = col(["Itens", "Quantidade", "Qtd", "Qtde", "Quantidade Vendida"])
+    cv = col(["Venda", "Valor Venda", "Faturamento", "Valor Líquido"])
+    cc = col(["Custo", "Custo Total", "Valor Custo"])
+    cm = col(["Ano-mês", "Ano-mes", "Competência", "Competencia", "Data Venda", "Data"])
+    if not all([ce, cq, cv, cc, cm]):
+        return pd.DataFrame(columns=cols)
+    b["EAN"] = eirox_v210_normalizar_ean(b[ce])
+    txt = b[cm].astype(str).str.strip()
+    ext = txt.str.extract(r"(20\d{2})\D*([01]\d)")
+    comp = pd.Series("", index=b.index, dtype=object)
+    ok = ext[0].notna() & ext[1].notna()
+    comp.loc[ok] = ext.loc[ok, 0] + "-" + ext.loc[ok, 1]
+    faltou = ~ok
+    if faltou.any():
+        dt = pd.to_datetime(b.loc[faltou, cm], errors="coerce", dayfirst=True)
+        comp.loc[faltou] = dt.dt.strftime("%Y-%m").fillna("")
+    b["competencia"] = comp
+    for origem, destino in [(cq,"quantidade"),(cv,"venda"),(cc,"custo_total")]:
+        b[destino] = _num(b[origem])
+    b = b[
+        b["EAN"].ne("") & b["competencia"].str.match(r"^20\d{2}-(0[1-9]|1[0-2])$")
+        & b["quantidade"].gt(0) & b["venda"].gt(0)
+    ].copy()
+    if b.empty:
+        return pd.DataFrame(columns=cols)
+    return b.groupby(["EAN","competencia"], as_index=False)[
+        ["quantidade","venda","custo_total"]
+    ].sum()
+
+
+def eirox_v260_apurar(vendas):
+    """Compara preço/custo executado com resultado observado, sem atribuição causal."""
+    from datetime import datetime as _dt
+    ex = eirox_v260_ler("execucoes")
+    mensal = eirox_v260_historico_mensal(vendas)
+    if ex.empty or mensal.empty:
+        return 0
+    mes_atual = pd.Timestamp.now().strftime("%Y-%m")
+    registros = []
+    for _, e in ex.iterrows():
+        inicio = pd.to_datetime(e["executado_em"], errors="coerce")
+        if pd.isna(inicio):
+            continue
+        # Somente competências inteiramente posteriores ao mês da execução.
+        # A base mensal não permite isolar vendas antes/depois dentro do mês.
+        for _, m in mensal[
+            (mensal["EAN"].eq(str(e["ean"])))
+            & (mensal["competencia"].gt(inicio.strftime("%Y-%m")))
+            & (mensal["competencia"].lt(mes_atual))
+        ].iterrows():
+            q = eirox_v260_num(m["quantidade"])
+            v = eirox_v260_num(m["venda"])
+            ct = eirox_v260_num(m["custo_total"])
+            if not q or not v or ct is None or ct <= 0:
+                continue
+            pm, cu = v/q, ct/q
+            pa = eirox_v260_num(e["preco_anterior"])
+            ca = eirox_v260_num(e["custo_anterior"])
+            tipo = str(e["tipo"])
+            resultado = None
+            motivo = ""
+            if tipo == "AJUSTAR PREÇO" and pa is not None:
+                resultado = (pm-pa)*q
+                motivo = "Variação observada do preço médio versus preço anterior, ao volume realizado."
+            elif tipo == "NEGOCIAR CUSTO" and ca is not None:
+                resultado = (ca-cu)*q
+                motivo = "Variação observada do custo unitário versus custo anterior, ao volume realizado."
+            else:
+                motivo = "Revisão de mercado sem resultado financeiro atribuível automaticamente."
+            status = "APURADO" if resultado is not None else "NÃO APURÁVEL"
+            rid = hashlib.sha256(f"{e['id']}|{m['competencia']}".encode()).hexdigest()[:32]
+            registros.append((
+                rid,e["id"],m["competencia"],q,v,ct,pm,cu,resultado,status,motivo,
+                _dt.now().isoformat(timespec="seconds")
+            ))
+    if registros:
+        with eirox_v260_db() as con:
+            con.executemany("""INSERT OR REPLACE INTO apuracoes VALUES
+                (?,?,?,?,?,?,?,?,?,?,?,?)""", registros)
+    return len(registros)
+
+
+def eirox_v260_render(base):
+    st.markdown("## 💰 Resultado Realizado")
+    st.caption("Registro de execução e comparação com vendas e custos observados em competências fechadas.")
+    acoes = eirox_v250_ler_acoes()
+    ex = eirox_v260_ler("execucoes")
+    ap = eirox_v260_ler("apuracoes")
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Ações registradas", len(ex))
+    c2.metric("Competências apuradas", len(ap))
+    c3.metric("Registros com resultado", int(ap["resultado_realizado"].notna().sum()) if not ap.empty else 0)
+    c4.metric("Ações concluídas", int(acoes["Status"].eq("CONCLUÍDO").sum()) if not acoes.empty else 0)
+    st.warning("Resultado observado não é lucro incremental causalmente comprovado. Variações de volume, mix, descontos e outros fatores podem influenciar a comparação. Não some resultados de ações sobrepostas nem os compare diretamente ao potencial identificado.")
+    st.markdown("### 1. Registrar execução")
+    if acoes.empty:
+        st.info("Adicione ações no Plano de Ações antes de registrar a execução.")
+    else:
+        elegiveis = acoes[~acoes["Status"].eq("CANCELADO")].copy()
+        if elegiveis.empty:
+            st.info("Não existem ações elegíveis.")
+        else:
+            labels = {f"{r['EAN']} | {r['Produto']} | {r['Tipo_Acao']}":r["ID_Acao"] for _,r in elegiveis.iterrows()}
+            escolha = st.selectbox("Ação",list(labels),key="v260_acao")
+            row = elegiveis[elegiveis["ID_Acao"].eq(labels[escolha])].iloc[0].to_dict()
+            # Referências são capturadas no momento do registro, não reescritas depois.
+            ref = base.copy()
+            ce = eirox_v240_coluna_existente(ref,["EAN_Oficial","EAN","EAN (GTIN)"])
+            if ce:
+                ref = ref[eirox_v210_normalizar_ean(ref[ce]).eq(str(row["EAN"]))]
+            if not ref.empty:
+                rr=ref.iloc[0]
+                row["Custo_Oficial_Referencia"]=rr.get("Custo_Oficial")
+                row["Volume_Oficial_Referencia"]=rr.get("Volume_Oficial")
+                row["Mes_Volume_Oficial_Referencia"]=rr.get("Mes_Volume_Oficial","")
+            with st.form("v260_registro"):
+                data=st.date_input("Data efetiva da execução",value=pd.Timestamp.now().date())
+                a,b=st.columns(2)
+                preco=a.number_input("Preço efetivamente implantado (R$)",min_value=0.0,value=0.0,format="%.2f")
+                custo=b.number_input("Custo efetivamente negociado (R$)",min_value=0.0,value=0.0,format="%.4f")
+                obs=st.text_area("Comprovante / observação da execução")
+                if st.form_submit_button("Registrar execução",type="primary"):
+                    try:
+                        eid=eirox_v260_registrar(row,data.isoformat(),preco or None,custo or None,obs)
+                        st.success("Execução registrada: "+eid[:12])
+                    except Exception as exc:
+                        st.error(str(exc))
+    st.markdown("### 2. Apuração por competência")
+    st.caption("Apenas meses inteiramente posteriores ao mês da execução. O mês atual e o mês da implantação ficam excluídos.")
+    if st.button("🔄 Apurar competências fechadas",key="v260_apurar"):
+        try:
+            qtd=eirox_v260_apurar(globals().get("venda_rede",pd.DataFrame()))
+            st.success(f"{qtd} registro(s) de competência processado(s).")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Falha na apuração: {exc}")
+    ex=eirox_v260_ler("execucoes")
+    ap=eirox_v260_ler("apuracoes")
+    if not ex.empty:
+        st.markdown("### 3. Histórico de execuções")
+        eirox_dataframe_brl(ex,use_container_width=True,hide_index=True)
+    if not ap.empty:
+        st.markdown("### 4. Resultado observado por competência")
+        eirox_dataframe_brl(ap,use_container_width=True,hide_index=True)
+        if globals().get("pode_exportar",True):
+            eirox_botao_excel_padrao(ap,titulo="Resultado Realizado — Eirox Pricing",
+                arquivo="Eirox_Resultado_Realizado.xlsx",key="v260_excel",use_container_width=True)
+    st.caption("Os registros ficam em SQLite local separado por contexto. Em hospedagem com disco efêmero, configure armazenamento persistente antes de utilizar como histórico definitivo.")
+
+
 # ==========================================================
 # EIROX PRICING 2.0 — FASE 1
 # BASE ANALÍTICA PERSISTENTE + VIEWER LEVE
@@ -18764,7 +19004,7 @@ else:
 
 
 # Núcleo comercial - mesma ordem da proposta visual.
-_core_pages_eirox = ["🎯 Prioridade de Pesquisa", "📊 Geral", "⬆️ Subir Preço", "⬇️ Baixar Preço", "🤝 Negociar Compra", "📋 Plano de Ações"]
+_core_pages_eirox = ["🎯 Prioridade de Pesquisa", "📊 Geral", "⬆️ Subir Preço", "⬇️ Baixar Preço", "🤝 Negociar Compra", "📋 Plano de Ações", "💰 Resultado Realizado"]
 if "📊 Dashboard Geral" in paginas_liberadas:
     _idx_dashboard = paginas_liberadas.index("📊 Dashboard Geral") + 1
     for _pg in reversed(_core_pages_eirox):
@@ -18781,6 +19021,9 @@ if "🧪 Central de Qualidade" not in paginas_liberadas:
 # Fase 5 — Plano de Ações faz parte da Área do Cliente.
 if "📋 Plano de Ações" not in paginas_liberadas:
     paginas_liberadas.append("📋 Plano de Ações")
+ 
+if "💰 Resultado Realizado" not in paginas_liberadas:
+    paginas_liberadas.append("💰 Resultado Realizado")
 
 paginas_cliente_menu, paginas_admin_menu = dividir_menu_cliente_admin(paginas_liberadas)
 
@@ -22429,6 +22672,11 @@ df_filtrado = eirox_v142_data_final_unica(
 
 # TELAS CENTRAIS - PROPOSTA VISUAL APROVADA
 # --------------------------------------------------
+if pagina == "💰 Resultado Realizado":
+    eirox_v260_render(df)
+    st.stop()
+
+
 if pagina == "📋 Plano de Ações":
     eirox_v250_render_plano_acoes(df)
     st.stop()
