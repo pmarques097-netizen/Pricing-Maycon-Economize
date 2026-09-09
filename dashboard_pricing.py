@@ -7965,8 +7965,8 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
         return df_pesquisa
 
 
-# EIROX PRICING 2.0 — FASE 4: CENTRAL DE QUALIDADE DE DADOS.
-VERSAO_APP = "Enterprise 2.0 — Fase 4"
+# EIROX PRICING 2.0 — FASE 5: PLANO DE AÇÕES OPERACIONAL.
+VERSAO_APP = "Enterprise 2.0 — Fase 5"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -17096,6 +17096,550 @@ def eirox_v240_render_central_qualidade(base):
             eirox_dataframe_brl(rank, use_container_width=True, hide_index=True)
 
 
+
+# ==========================================================
+# EIROX PRICING 2.0 — FASE 5
+# PLANO DE AÇÕES + RESPONSÁVEL + STATUS + PRAZO
+# ==========================================================
+def eirox_v250_workflow_dir():
+    pasta = Path(__file__).resolve().parent / "_cache_pricing" / "workflow_v250"
+    pasta.mkdir(parents=True, exist_ok=True)
+    return pasta
+
+
+def eirox_v250_contexto_chave():
+    partes = [
+        str(globals().get("_eirox_sig_contexto", "")),
+        str(globals().get("nome_empresa_contexto", "")),
+        str(globals().get("cliente_id_contexto", "")),
+        str(globals().get("empresa_id_contexto", "")),
+    ]
+    raw = "|".join(partes).strip("|") or "contexto_padrao"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def eirox_v250_arquivo_acoes():
+    return eirox_v250_workflow_dir() / f"acoes_{eirox_v250_contexto_chave()}.csv"
+
+
+def eirox_v250_colunas_acoes():
+    return [
+        "ID_Acao", "EAN", "Produto", "Tipo_Acao", "Origem",
+        "Preco_Atual", "Preco_Referencia", "Potencial_Identificado",
+        "Responsavel", "Status", "Prazo", "Observacao",
+        "Criado_Em", "Criado_Por", "Atualizado_Em", "Atualizado_Por",
+    ]
+
+
+def eirox_v250_ler_acoes():
+    arq = eirox_v250_arquivo_acoes()
+    cols = eirox_v250_colunas_acoes()
+    if not arq.exists():
+        return pd.DataFrame(columns=cols)
+    try:
+        d = pd.read_csv(arq, dtype=str, keep_default_na=False)
+        for c in cols:
+            if c not in d.columns:
+                d[c] = ""
+        return d[cols].copy()
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+
+def eirox_v250_salvar_acoes(base):
+    if not isinstance(base, pd.DataFrame):
+        return False
+    cols = eirox_v250_colunas_acoes()
+    d = base.copy()
+    for c in cols:
+        if c not in d.columns:
+            d[c] = ""
+    d = d[cols].copy()
+
+    arq = eirox_v250_arquivo_acoes()
+    tmp = arq.with_name(f".tmp_{arq.name}")
+    try:
+        d.to_csv(tmp, index=False, encoding="utf-8-sig")
+        os.replace(tmp, arq)
+        return True
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
+
+
+def eirox_v250_id_acao(ean, tipo):
+    contexto = eirox_v250_contexto_chave()
+    raw = f"{contexto}|{str(ean).strip()}|{str(tipo).strip().upper()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def eirox_v250_usuario_atual():
+    try:
+        return usuario_logado_eirox()
+    except Exception:
+        return str(
+            st.session_state.get("usuario")
+            or st.session_state.get("username")
+            or "usuario"
+        )
+
+
+def eirox_v250_num(v):
+    try:
+        x = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
+        return float(x) if pd.notna(x) else 0.0
+    except Exception:
+        return 0.0
+
+
+def eirox_v250_oportunidades(base):
+    """
+    Consolida oportunidades sem alterar as regras oficiais:
+    - AJUSTAR PREÇO: lista financeira unificada de SUBIR PREÇO;
+    - NEGOCIAR CUSTO / REVISAR MERCADO: Motor de Rentabilidade já existente.
+    """
+    cols = [
+        "EAN", "Produto", "Tipo_Acao", "Origem",
+        "Preco_Atual", "Preco_Referencia", "Potencial_Identificado",
+    ]
+    blocos = []
+
+    # 1) Preço — mesma população financeira do simulador unificado.
+    try:
+        sim = eirox_v159_simulacao_unificada(base.copy())
+        if isinstance(sim, pd.DataFrame) and not sim.empty:
+            p = pd.DataFrame(index=sim.index)
+            p["EAN"] = eirox_v210_normalizar_ean(sim.get("EAN", pd.Series("", index=sim.index)))
+            p["Produto"] = sim.get(
+                "Produto_Simulador", pd.Series("", index=sim.index)
+            ).fillna("").astype(str)
+            p["Tipo_Acao"] = "AJUSTAR PREÇO"
+            p["Origem"] = "SIMULADOR UNIFICADO — SUBIR PREÇO"
+            p["Preco_Atual"] = pd.to_numeric(sim.get("Preco_Atual", np.nan), errors="coerce")
+            p["Preco_Referencia"] = pd.to_numeric(
+                sim.get("Preco_Sugerido_Mercado", np.nan), errors="coerce"
+            )
+            p["Potencial_Identificado"] = pd.to_numeric(
+                sim.get("Ganho_Potencial_Simulador", 0), errors="coerce"
+            ).fillna(0)
+            blocos.append(p)
+    except Exception:
+        pass
+
+    # 2) Custo / mercado — usa o Motor de Rentabilidade vigente, sem redefinir regra.
+    try:
+        rent = eirox_v160_motor_rentabilidade(base.copy())
+        if isinstance(rent, pd.DataFrame) and not rent.empty:
+            r = rent[
+                rent["Ação Rentabilidade"].isin(["NEGOCIAR CUSTO", "REVISAR MERCADO"])
+            ].copy()
+            if not r.empty:
+                p = pd.DataFrame(index=r.index)
+                p["EAN"] = eirox_v210_normalizar_ean(r["EAN"])
+                p["Produto"] = r.get("Produto", pd.Series("", index=r.index)).fillna("").astype(str)
+                p["Tipo_Acao"] = r["Ação Rentabilidade"].astype(str)
+                p["Origem"] = "MOTOR DE RENTABILIDADE"
+                p["Preco_Atual"] = pd.to_numeric(r.get("Preço Atual", np.nan), errors="coerce")
+                p["Preco_Referencia"] = pd.to_numeric(
+                    r.get("Preço Mercado", np.nan), errors="coerce"
+                )
+                pot_preco = pd.to_numeric(
+                    r.get("Potencial por Preço", 0), errors="coerce"
+                ).fillna(0)
+                pot_custo = pd.to_numeric(
+                    r.get("Potencial por Custo", 0), errors="coerce"
+                ).fillna(0)
+                p["Potencial_Identificado"] = np.where(
+                    p["Tipo_Acao"].eq("NEGOCIAR CUSTO"),
+                    pot_custo,
+                    pot_preco,
+                )
+                blocos.append(p)
+    except Exception:
+        pass
+
+    if not blocos:
+        return pd.DataFrame(columns=cols)
+
+    out = pd.concat(blocos, ignore_index=True)
+    out["EAN"] = out["EAN"].fillna("").astype(str)
+    out = out[out["EAN"].ne("")].copy()
+    out["Potencial_Identificado"] = pd.to_numeric(
+        out["Potencial_Identificado"], errors="coerce"
+    ).fillna(0)
+    out = (
+        out.sort_values(
+            ["Potencial_Identificado", "Tipo_Acao", "Produto"],
+            ascending=[False, True, True],
+            kind="stable",
+        )
+        .drop_duplicates(["EAN", "Tipo_Acao"], keep="first")
+        .reset_index(drop=True)
+    )
+    return out[cols]
+
+
+@st.cache_resource(show_spinner=False, max_entries=8)
+def eirox_v250_oportunidades_cacheadas(
+    assinatura_master,
+    assinatura_contexto,
+    _base,
+):
+    return eirox_v250_oportunidades(_base)
+
+
+def eirox_v250_adicionar_oportunidades(oportunidades):
+    if not isinstance(oportunidades, pd.DataFrame) or oportunidades.empty:
+        return 0
+
+    atual = eirox_v250_ler_acoes()
+    existentes = set(atual["ID_Acao"].astype(str)) if not atual.empty else set()
+    usuario = eirox_v250_usuario_atual()
+    agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    novos = []
+
+    for _, row in oportunidades.iterrows():
+        ean = str(row.get("EAN", "")).strip()
+        tipo = str(row.get("Tipo_Acao", "")).strip()
+        if not ean or not tipo:
+            continue
+        aid = eirox_v250_id_acao(ean, tipo)
+        if aid in existentes:
+            continue
+        novos.append({
+            "ID_Acao": aid,
+            "EAN": ean,
+            "Produto": str(row.get("Produto", "")).strip(),
+            "Tipo_Acao": tipo,
+            "Origem": str(row.get("Origem", "")).strip(),
+            "Preco_Atual": row.get("Preco_Atual", ""),
+            "Preco_Referencia": row.get("Preco_Referencia", ""),
+            "Potencial_Identificado": row.get("Potencial_Identificado", 0),
+            "Responsavel": "",
+            "Status": "PENDENTE",
+            "Prazo": "",
+            "Observacao": "",
+            "Criado_Em": agora,
+            "Criado_Por": usuario,
+            "Atualizado_Em": agora,
+            "Atualizado_Por": usuario,
+        })
+        existentes.add(aid)
+
+    if not novos:
+        return 0
+
+    novo_df = pd.DataFrame(novos)
+    base_final = pd.concat([atual, novo_df], ignore_index=True)
+    return len(novos) if eirox_v250_salvar_acoes(base_final) else 0
+
+
+def eirox_v250_atualizar_acao(id_acao, responsavel, status, prazo, observacao):
+    acoes = eirox_v250_ler_acoes()
+    if acoes.empty or not id_acao:
+        return False
+    mask = acoes["ID_Acao"].astype(str).eq(str(id_acao))
+    if not mask.any():
+        return False
+    usuario = eirox_v250_usuario_atual()
+    agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    acoes.loc[mask, "Responsavel"] = str(responsavel or "").strip()
+    acoes.loc[mask, "Status"] = str(status or "PENDENTE").strip()
+    acoes.loc[mask, "Prazo"] = str(prazo or "").strip()
+    acoes.loc[mask, "Observacao"] = str(observacao or "").strip()
+    acoes.loc[mask, "Atualizado_Em"] = agora
+    acoes.loc[mask, "Atualizado_Por"] = usuario
+    return eirox_v250_salvar_acoes(acoes)
+
+
+def eirox_v250_render_plano_acoes(base):
+    st.markdown("## 📋 Plano de Ações")
+    st.caption(
+        "Transforma oportunidades do Pricing em execução operacional com "
+        "responsável, status, prazo e histórico de atualização."
+    )
+
+    oportunidades = eirox_v250_oportunidades_cacheadas(
+        globals().get("_eirox_sig_master", ""),
+        globals().get("_eirox_sig_contexto", ""),
+        base,
+    ).copy(deep=False)
+
+    acoes = eirox_v250_ler_acoes()
+
+    # Indicadores da carteira.
+    total_oport = int(len(oportunidades)) if isinstance(oportunidades, pd.DataFrame) else 0
+    potencial_total = (
+        float(pd.to_numeric(
+            oportunidades.get("Potencial_Identificado", 0), errors="coerce"
+        ).fillna(0).sum())
+        if total_oport else 0.0
+    )
+    abertas = int(
+        (~acoes["Status"].isin(["CONCLUÍDO", "CANCELADO"])).sum()
+    ) if not acoes.empty else 0
+    concluidas = int(acoes["Status"].eq("CONCLUÍDO").sum()) if not acoes.empty else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Oportunidades atuais", f"{total_oport:,}".replace(",", "."))
+    c2.metric("Potencial identificado", moeda_br(potencial_total))
+    c3.metric("Ações abertas", f"{abertas:,}".replace(",", "."))
+    c4.metric("Concluídas", f"{concluidas:,}".replace(",", "."))
+
+    st.markdown("### 1. Oportunidades identificadas")
+    if not isinstance(oportunidades, pd.DataFrame) or oportunidades.empty:
+        st.info("Nenhuma oportunidade operacional encontrada para a seleção atual.")
+    else:
+        filtros1, filtros2 = st.columns(2)
+        tipos = sorted(oportunidades["Tipo_Acao"].dropna().astype(str).unique().tolist())
+        tipo_sel = filtros1.multiselect(
+            "Tipo de ação",
+            tipos,
+            default=[],
+            key="eirox_v250_tipo_oportunidade",
+        )
+        busca = filtros2.text_input(
+            "EAN ou produto",
+            key="eirox_v250_busca_oportunidade",
+            placeholder="Digite para localizar",
+        ).strip()
+
+        opp_view = oportunidades.copy()
+        if tipo_sel:
+            opp_view = opp_view[opp_view["Tipo_Acao"].isin(tipo_sel)].copy()
+        if busca:
+            b = busca.casefold()
+            opp_view = opp_view[
+                opp_view["EAN"].astype(str).str.casefold().str.contains(b, regex=False)
+                | opp_view["Produto"].astype(str).str.casefold().str.contains(b, regex=False)
+            ].copy()
+
+        tabela_opp = opp_view.rename(columns={
+            "Tipo_Acao": "Ação",
+            "Preco_Atual": "Preço Atual",
+            "Preco_Referencia": "Preço Referência",
+            "Potencial_Identificado": "Potencial Identificado",
+        })
+        eirox_dataframe_brl(
+            tabela_opp,
+            use_container_width=True,
+            hide_index=True,
+            height=390,
+        )
+
+        if st.button(
+            "➕ Adicionar oportunidades filtradas ao plano",
+            key="eirox_v250_adicionar_filtradas",
+            type="primary",
+            use_container_width=True,
+        ):
+            qtd = eirox_v250_adicionar_oportunidades(opp_view)
+            if qtd > 0:
+                st.success(f"{qtd} nova(s) ação(ões) adicionada(s) ao plano.")
+                st.rerun()
+            else:
+                st.info("As oportunidades desta seleção já estão no plano.")
+
+    st.markdown("### 2. Execução e acompanhamento")
+    acoes = eirox_v250_ler_acoes()
+    if acoes.empty:
+        st.info("Ainda não existem ações adicionadas ao plano.")
+        return
+
+    # Converte apenas para exibição/ordenação; arquivo permanece textual e auditável.
+    acoes_view = acoes.copy()
+    acoes_view["Potencial_num"] = pd.to_numeric(
+        acoes_view["Potencial_Identificado"], errors="coerce"
+    ).fillna(0)
+    acoes_view = acoes_view.sort_values(
+        ["Status", "Potencial_num", "Prazo"],
+        ascending=[True, False, True],
+        kind="stable",
+    )
+
+    f1, f2, f3 = st.columns(3)
+    status_opts = ["PENDENTE", "EM ANDAMENTO", "AGUARDANDO", "CONCLUÍDO", "CANCELADO"]
+    status_f = f1.multiselect(
+        "Status",
+        status_opts,
+        default=[],
+        key="eirox_v250_f_status",
+    )
+    responsaveis = sorted(
+        [x for x in acoes_view["Responsavel"].dropna().astype(str).unique() if x.strip()]
+    )
+    resp_f = f2.multiselect(
+        "Responsável",
+        responsaveis,
+        default=[],
+        key="eirox_v250_f_resp",
+    )
+    tipo_f = f3.multiselect(
+        "Ação",
+        sorted(acoes_view["Tipo_Acao"].dropna().astype(str).unique()),
+        default=[],
+        key="eirox_v250_f_tipo",
+    )
+
+    fila = acoes_view.copy()
+    if status_f:
+        fila = fila[fila["Status"].isin(status_f)].copy()
+    if resp_f:
+        fila = fila[fila["Responsavel"].isin(resp_f)].copy()
+    if tipo_f:
+        fila = fila[fila["Tipo_Acao"].isin(tipo_f)].copy()
+
+    hoje = pd.Timestamp.now().normalize()
+    prazos_dt = pd.to_datetime(fila["Prazo"], errors="coerce", dayfirst=True)
+    vencidas = (
+        prazos_dt.notna()
+        & prazos_dt.lt(hoje)
+        & ~fila["Status"].isin(["CONCLUÍDO", "CANCELADO"])
+    )
+    fila["Situação Prazo"] = np.where(vencidas, "ATRASADA", "NO PRAZO / SEM PRAZO")
+
+    mostrar = fila[[
+        "ID_Acao", "EAN", "Produto", "Tipo_Acao", "Origem",
+        "Preco_Atual", "Preco_Referencia", "Potencial_Identificado",
+        "Responsavel", "Status", "Prazo", "Situação Prazo",
+        "Observacao", "Atualizado_Em", "Atualizado_Por",
+    ]].rename(columns={
+        "Tipo_Acao": "Ação",
+        "Preco_Atual": "Preço Atual",
+        "Preco_Referencia": "Preço Referência",
+        "Potencial_Identificado": "Potencial Identificado",
+        "Responsavel": "Responsável",
+        "Observacao": "Observação",
+        "Atualizado_Em": "Atualizado em",
+        "Atualizado_Por": "Atualizado por",
+    })
+
+    eirox_dataframe_brl(
+        mostrar,
+        use_container_width=True,
+        hide_index=True,
+        height=480,
+    )
+
+    # Editor individual para manter persistência e auditoria determinística.
+    labels = (
+        fila["EAN"].astype(str)
+        + " | "
+        + fila["Produto"].astype(str)
+        + " | "
+        + fila["Tipo_Acao"].astype(str)
+    )
+    mapa_label_id = dict(zip(labels, fila["ID_Acao"]))
+    escolhido = st.selectbox(
+        "Selecionar ação para atualizar",
+        list(mapa_label_id.keys()),
+        key="eirox_v250_sel_acao",
+    )
+    id_sel = mapa_label_id.get(escolhido, "")
+    row = fila[fila["ID_Acao"].eq(id_sel)].iloc[0] if id_sel else None
+
+    if row is not None:
+        e1, e2, e3 = st.columns(3)
+        responsavel = e1.text_input(
+            "Responsável",
+            value=str(row.get("Responsavel", "")),
+            key=f"eirox_v250_resp_{id_sel}",
+        )
+        status_atual = str(row.get("Status", "PENDENTE") or "PENDENTE")
+        idx_status = status_opts.index(status_atual) if status_atual in status_opts else 0
+        status = e2.selectbox(
+            "Status",
+            status_opts,
+            index=idx_status,
+            key=f"eirox_v250_status_{id_sel}",
+        )
+
+        prazo_atual = pd.to_datetime(
+            str(row.get("Prazo", "")), errors="coerce", dayfirst=True
+        )
+        prazo_default = (
+            prazo_atual.date()
+            if pd.notna(prazo_atual)
+            else pd.Timestamp.now().date()
+        )
+        prazo_data = e3.date_input(
+            "Prazo",
+            value=prazo_default,
+            key=f"eirox_v250_prazo_{id_sel}",
+        )
+        observacao = st.text_area(
+            "Observação",
+            value=str(row.get("Observacao", "")),
+            key=f"eirox_v250_obs_{id_sel}",
+            height=100,
+        )
+
+        if st.button(
+            "💾 Salvar atualização da ação",
+            key=f"eirox_v250_salvar_{id_sel}",
+            type="primary",
+            use_container_width=True,
+        ):
+            ok = eirox_v250_atualizar_acao(
+                id_sel,
+                responsavel,
+                status,
+                prazo_data.strftime("%d/%m/%Y") if prazo_data else "",
+                observacao,
+            )
+            if ok:
+                st.success("Ação atualizada.")
+                st.rerun()
+            else:
+                st.error("Não foi possível salvar a atualização.")
+
+    st.markdown("### 3. Resumo operacional")
+    base_resumo = eirox_v250_ler_acoes()
+    if not base_resumo.empty:
+        resumo_status = (
+            base_resumo.groupby("Status", as_index=False)
+            .agg(
+                Ações=("ID_Acao", "count"),
+                Potencial_Identificado=("Potencial_Identificado", lambda s: pd.to_numeric(s, errors="coerce").fillna(0).sum()),
+            )
+            .sort_values("Potencial_Identificado", ascending=False, kind="stable")
+        )
+        eirox_dataframe_brl(
+            resumo_status,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if globals().get("pode_exportar", True):
+            exportar = base_resumo.rename(columns={
+                "Tipo_Acao": "Ação",
+                "Preco_Atual": "Preço Atual",
+                "Preco_Referencia": "Preço Referência",
+                "Potencial_Identificado": "Potencial Identificado",
+                "Responsavel": "Responsável",
+                "Observacao": "Observação",
+                "Criado_Em": "Criado em",
+                "Criado_Por": "Criado por",
+                "Atualizado_Em": "Atualizado em",
+                "Atualizado_Por": "Atualizado por",
+            })
+            eirox_botao_excel_padrao(
+                exportar,
+                titulo="Plano de Ações — Eirox Pricing",
+                arquivo="Eirox_Plano_de_Acoes.xlsx",
+                key="eirox_v250_exportar_acoes",
+                use_container_width=True,
+            )
+
+    st.caption(
+        "Persistência desta Fase 5 usa arquivo local do aplicativo, separado por contexto do cliente. "
+        "Em hospedagem com filesystem efêmero, a próxima etapa deverá mover esse histórico para banco persistente."
+    )
+
+
 # ==========================================================
 # EIROX PRICING 2.0 — FASE 1
 # BASE ANALÍTICA PERSISTENTE + VIEWER LEVE
@@ -18220,7 +18764,7 @@ else:
 
 
 # Núcleo comercial - mesma ordem da proposta visual.
-_core_pages_eirox = ["🎯 Prioridade de Pesquisa", "📊 Geral", "⬆️ Subir Preço", "⬇️ Baixar Preço", "🤝 Negociar Compra"]
+_core_pages_eirox = ["🎯 Prioridade de Pesquisa", "📊 Geral", "⬆️ Subir Preço", "⬇️ Baixar Preço", "🤝 Negociar Compra", "📋 Plano de Ações"]
 if "📊 Dashboard Geral" in paginas_liberadas:
     _idx_dashboard = paginas_liberadas.index("📊 Dashboard Geral") + 1
     for _pg in reversed(_core_pages_eirox):
@@ -18233,6 +18777,10 @@ if "📊 Dashboard Geral" in paginas_liberadas:
 # Fase 4 — Central de Qualidade: ferramenta administrativa.
 if "🧪 Central de Qualidade" not in paginas_liberadas:
     paginas_liberadas.append("🧪 Central de Qualidade")
+
+# Fase 5 — Plano de Ações faz parte da Área do Cliente.
+if "📋 Plano de Ações" not in paginas_liberadas:
+    paginas_liberadas.append("📋 Plano de Ações")
 
 paginas_cliente_menu, paginas_admin_menu = dividir_menu_cliente_admin(paginas_liberadas)
 
@@ -21881,6 +22429,11 @@ df_filtrado = eirox_v142_data_final_unica(
 
 # TELAS CENTRAIS - PROPOSTA VISUAL APROVADA
 # --------------------------------------------------
+if pagina == "📋 Plano de Ações":
+    eirox_v250_render_plano_acoes(df)
+    st.stop()
+
+
 if pagina == "🧪 Central de Qualidade":
     if not usuario_master():
         st.error("Acesso restrito à administração.")
