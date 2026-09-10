@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8 — Multi-Cliente"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.2 — Análise Prioritários"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -18988,6 +18988,233 @@ def _prio_resumo_pesquisa(prioridades, dados):
     return p.sort_values(["_rank", "Ordem"], na_position="last")
 
 
+
+def eirox_v282_analise_prioritarios(prioridades, dados):
+    """Análise financeira/comercial completa dos EANs ativos da Prioridade de Pesquisa."""
+    if not isinstance(prioridades, pd.DataFrame) or prioridades.empty:
+        return pd.DataFrame()
+    if not isinstance(dados, pd.DataFrame) or dados.empty:
+        return pd.DataFrame()
+
+    p = prioridades.copy()
+    p["EAN"] = p["EAN"].apply(_prio_normalizar_ean)
+    p = p[p["EAN"].str.len().gt(0)].drop_duplicates("EAN", keep="first")
+
+    try:
+        m = eirox_motor_oportunidades(dados.copy())
+    except Exception:
+        m = dados.copy()
+
+    if not isinstance(m, pd.DataFrame) or m.empty:
+        return pd.DataFrame()
+
+    ce = _prio_coluna(m, ["EAN_Oficial", "EAN", "EAN (GTIN)", "GTIN", "Código de Barras"])
+    if not ce:
+        return pd.DataFrame()
+
+    m = m.copy()
+    m["_EAN_V282"] = m[ce].apply(_prio_normalizar_ean)
+    m = m[m["_EAN_V282"].isin(set(p["EAN"]))].copy()
+    if m.empty:
+        return pd.DataFrame()
+
+    # Uma linha por EAN. O motor já carrega a verdade financeira corrente.
+    m = m.drop_duplicates("_EAN_V282", keep="first")
+    idx = m.set_index("_EAN_V282")
+
+    out = p[["Ordem","Prioridade","EAN","Produto","Observacao"]].copy()
+    keys = out["EAN"]
+
+    def mapcol(cands, default=np.nan):
+        for c in cands:
+            if c in idx.columns:
+                return keys.map(idx[c])
+        return pd.Series(default, index=out.index)
+
+    # Cadastro / identificação
+    prod_motor = mapcol(["Produto","Descrição","Descricao"], "")
+    out["Produto"] = out["Produto"].where(
+        out["Produto"].astype(str).str.strip().ne(""),
+        prod_motor.fillna("").astype(str)
+    )
+    out["Laboratório"] = mapcol(["Laboratório","Laboratorio","Fabricante"], "")
+    out["Família"] = mapcol(["Família","Familia"], "")
+    out["Curva"] = mapcol(["CURVA","Curva"], "")
+
+    # Preço atual — regra estrita V7.1
+    out["Preço Atual"] = pd.to_numeric(
+        mapcol(["Preço_Atual_Eirox","Preco_Atual_Oficial","Preco_Ultima_Venda"]),
+        errors="coerce"
+    )
+    fonte = mapcol(["Fonte_Preço_Eirox","Fonte_Preco_Oficial"], "").fillna("").astype(str)
+    out["Fonte Preço Atual"] = fonte.replace({
+        "ÚLTIMA VENDA": "VENDA_TESTE — ÚLTIMA PESQUISA PRINCIPAL",
+        "ÚLTIMO MÊS FECHADO": "VENDA_FINAL_TESTE — ÚLTIMO MÊS FECHADO",
+    })
+
+    data_preco = mapcol(["Data_Preco_Oficial","Data_Ultima_Venda"], "")
+    mes_preco = mapcol(["Mes_Fechado_Referencia","Mes_Custo_Oficial"], "")
+    out["Data/Competência Preço"] = [
+        str(d).strip() if str(d).strip().lower() not in {"","nan","nat","none"} else str(mm).strip()
+        for d,mm in zip(data_preco,mes_preco)
+    ]
+
+    # Mercado / concorrência
+    out["Menor Preço Concorrente"] = pd.to_numeric(
+        mapcol(["Preço_Mercado_Eirox","Preco_Mercado_Oficial","Menor Preço Concorrente"]),
+        errors="coerce"
+    )
+    out["Loja Menor Preço"] = mapcol(
+        ["Loja_Mercado_Oficial","Loja do Menor Preço","Loja_Menor_Preco"], ""
+    )
+    out["Data Pesquisa Mercado"] = mapcol(
+        ["Data_Mercado_Oficial","Data da Pesquisa","Data Pesquisa"], ""
+    )
+
+    # Custo / margem
+    out["Custo Unitário"] = pd.to_numeric(
+        mapcol(["Custo_Oficial","Custo_Unitario_Eirox","Custo"]), errors="coerce"
+    )
+    out["Fonte Custo"] = mapcol(
+        ["Fonte_Custo_Oficial_2_0","Fonte_Custo"], ""
+    )
+    out["Motivo Custo"] = mapcol(
+        ["Motivo_Custo_Oficial","Motivo_Sem_Custo"], ""
+    )
+    out["Margem Atual %"] = (
+        (out["Preço Atual"] - out["Custo Unitário"])
+        / out["Preço Atual"].replace(0, np.nan) * 100
+    )
+
+    # Recomendação e preço sugerido do mesmo motor central.
+    out["Recomendação"] = mapcol(
+        ["Recomendacao_Central","Recomendacao_Oficial","Recomendacao"], ""
+    )
+    out["Preço Sugerido"] = pd.to_numeric(
+        mapcol(["Preço_Sugerido_Eirox","Preco_Sugerido_Mercado"]), errors="coerce"
+    )
+
+    # Volume / competência / faturamento
+    out["Volume Último Mês"] = pd.to_numeric(
+        mapcol(["Volume_Oficial","Itens_Mes_Fechado","Qtd_Vendida_Eirox"]),
+        errors="coerce"
+    )
+    out["Faturamento Último Mês"] = pd.to_numeric(
+        mapcol(["Faturamento_Mes_Oficial","Venda_Mes_Fechado"]), errors="coerce"
+    )
+    out["Competência Volume"] = mapcol(
+        ["Mes_Volume_Oficial","Mes_Fechado_Referencia"], ""
+    )
+
+    # Potencial: prioriza o ganho calculado pelo motor corrente para SUBIR PREÇO.
+    ganho_motor = pd.to_numeric(
+        mapcol(["Ganho_Lucro_Potencial_Eirox"]), errors="coerce"
+    ).fillna(0)
+    ganho_oficial = pd.to_numeric(
+        mapcol(["Ganho_Potencial_Oficial","Ganho_Potencial"]), errors="coerce"
+    ).fillna(0)
+    out["Ganho Potencial"] = np.where(
+        out["Recomendação"].astype(str).eq("SUBIR PREÇO"),
+        ganho_motor,
+        ganho_oficial
+    )
+
+    # Qualidade / pendências
+    out["Cobertura Dados %"] = pd.to_numeric(
+        mapcol(["Cobertura_Dado_Oficial_%"]), errors="coerce"
+    )
+    out["Pendências de Dados"] = mapcol(
+        ["Pendencias_Dado_Oficial"], ""
+    )
+    out["Status Dados"] = mapcol(
+        ["Status_Dado_Oficial"], ""
+    )
+
+    # Status de pesquisa da própria fila.
+    fila = _prio_resumo_pesquisa(p, dados)
+    if isinstance(fila, pd.DataFrame) and not fila.empty:
+        ff = fila.drop_duplicates("EAN").set_index("EAN")
+        out["Status Pesquisa"] = keys.map(ff["Status Pesquisa"])
+        out["Qtd. Pesquisas"] = keys.map(ff["Qtd. Registros"])
+        out["Última Pesquisa"] = keys.map(ff["Data mais recente"])
+
+    return out.sort_values(["Prioridade","Ordem"], kind="stable").reset_index(drop=True)
+
+
+def eirox_v282_render_analise_prioritarios(prioridades, dados):
+    st.divider()
+    st.markdown("## 📊 Análise Completa dos Produtos Prioritários")
+    st.caption(
+        "Visão consolidada dos itens cadastrados na Prioridade de Pesquisa: "
+        "preço atual e sua origem, concorrência, custo, margem, recomendação, "
+        "volume, faturamento, ganho potencial e qualidade dos dados."
+    )
+
+    analise = eirox_v282_analise_prioritarios(prioridades, dados)
+    if analise.empty:
+        st.info("Cadastre produtos prioritários para visualizar a análise completa.")
+        return
+
+    f1, f2, f3 = st.columns([1,1,2])
+    recs = sorted([x for x in analise["Recomendação"].fillna("").astype(str).unique() if x.strip()])
+    rec_sel = f1.multiselect("Recomendação", recs, key="v282_rec")
+    status_opts = sorted([x for x in analise.get("Status Pesquisa", pd.Series(dtype=str)).fillna("").astype(str).unique() if x.strip()])
+    status_sel = f2.multiselect("Status da pesquisa", status_opts, key="v282_status")
+    busca = f3.text_input("Buscar na análise por EAN ou produto", key="v282_busca").strip()
+
+    vis = analise.copy()
+    if rec_sel:
+        vis = vis[vis["Recomendação"].isin(rec_sel)].copy()
+    if status_sel and "Status Pesquisa" in vis.columns:
+        vis = vis[vis["Status Pesquisa"].isin(status_sel)].copy()
+    if busca:
+        vis = vis[
+            vis["EAN"].astype(str).str.contains(busca, case=False, na=False, regex=False)
+            | vis["Produto"].astype(str).str.contains(busca, case=False, na=False, regex=False)
+        ].copy()
+
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Itens analisados", f"{len(vis):,}".replace(",", "."))
+    c2.metric(
+        "Com preço atual",
+        f"{pd.to_numeric(vis['Preço Atual'],errors='coerce').gt(0).sum():,}".replace(",", ".")
+    )
+    c3.metric(
+        "Com custo",
+        f"{pd.to_numeric(vis['Custo Unitário'],errors='coerce').gt(0).sum():,}".replace(",", ".")
+    )
+    c4.metric(
+        "Ganho potencial",
+        moeda_br(float(pd.to_numeric(vis["Ganho Potencial"],errors="coerce").fillna(0).sum()))
+    )
+
+    st.dataframe(
+        vis,
+        use_container_width=True,
+        hide_index=True,
+        height=620,
+        column_config={
+            "Preço Atual": st.column_config.NumberColumn("Preço Atual", format="R$ %.2f"),
+            "Menor Preço Concorrente": st.column_config.NumberColumn("Menor Preço Concorrente", format="R$ %.2f"),
+            "Custo Unitário": st.column_config.NumberColumn("Custo Unitário", format="R$ %.2f"),
+            "Preço Sugerido": st.column_config.NumberColumn("Preço Sugerido", format="R$ %.2f"),
+            "Margem Atual %": st.column_config.NumberColumn("Margem Atual %", format="%.2f%%"),
+            "Faturamento Último Mês": st.column_config.NumberColumn("Faturamento Último Mês", format="R$ %.2f"),
+            "Ganho Potencial": st.column_config.NumberColumn("Ganho Potencial", format="R$ %.2f"),
+            "Cobertura Dados %": st.column_config.NumberColumn("Cobertura Dados %", format="%.0f%%"),
+        }
+    )
+
+    if globals().get("pode_exportar", True):
+        eirox_botao_excel_padrao(
+            vis,
+            titulo="Análise Completa — Prioridade de Pesquisa",
+            arquivo="Eirox_Analise_Completa_Prioridade_Pesquisa.xlsx",
+            key="v282_excel_prioridade",
+            use_container_width=True,
+        )
+
+
 def eirox_render_prioridade_pesquisa(dados_contexto):
     st.markdown("""
     <div class="eirox-hero">
@@ -19130,6 +19357,9 @@ def eirox_render_prioridade_pesquisa(dados_contexto):
                 st.rerun()
             else:
                 st.error(f"Não foi possível persistir as alterações: {erro}")
+
+    # Fase 8.2 — análise completa fica abaixo da operação da Prioridade de Pesquisa.
+    eirox_v282_render_analise_prioritarios(ativos, dados_contexto)
 
 
 paginas_liberadas = PERMISSOES_TELAS.get(
@@ -23070,7 +23300,7 @@ if pagina == "🧪 Central de Qualidade":
 
 
 if pagina == "🎯 Prioridade de Pesquisa":
-    eirox_render_prioridade_pesquisa(df_filtrado)
+    eirox_render_prioridade_pesquisa(df)
     st.stop()
 
 if pagina == "📊 Geral":
