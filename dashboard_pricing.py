@@ -1,3 +1,4 @@
+import calendar
 import streamlit as st
 import unicodedata
 import json
@@ -8043,7 +8044,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.2 — Análise Prioritários"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.4 — Média de Venda"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -19022,7 +19023,7 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
     m = m.drop_duplicates("_EAN_V282", keep="first")
     idx = m.set_index("_EAN_V282")
 
-    out = p[["Ordem","Prioridade","EAN","Produto","Observacao"]].copy()
+    out = p[["Ordem","Prioridade","EAN","Produto"]].copy()
     keys = out["EAN"]
 
     def mapcol(cands, default=np.nan):
@@ -19106,6 +19107,27 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
         ["Mes_Volume_Oficial","Mes_Fechado_Referencia"], ""
     )
 
+    # V8.4 — substitui Observação pela Média de Venda diária.
+    # Competência é mês fechado: Volume Último Mês / quantidade de dias do mês.
+    def _v284_dias_competencia(valor):
+        try:
+            dt = pd.to_datetime(str(valor).strip(), errors="coerce")
+            if pd.notna(dt):
+                return calendar.monthrange(int(dt.year), int(dt.month))[1]
+            txt = str(valor).strip()
+            mt = re.search(r"(20\\d{2})[-/](\\d{1,2})", txt)
+            if mt:
+                return calendar.monthrange(int(mt.group(1)), int(mt.group(2)))[1]
+        except Exception:
+            pass
+        return np.nan
+
+    _dias_v284 = out["Competência Volume"].apply(_v284_dias_competencia)
+    out["Média Venda/Dia"] = (
+        pd.to_numeric(out["Volume Último Mês"], errors="coerce")
+        / pd.to_numeric(_dias_v284, errors="coerce")
+    )
+
     # Potencial: prioriza o ganho calculado pelo motor corrente para SUBIR PREÇO.
     ganho_motor = pd.to_numeric(
         mapcol(["Ganho_Lucro_Potencial_Eirox"]), errors="coerce"
@@ -19137,6 +19159,50 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
         out["Status Pesquisa"] = keys.map(ff["Status Pesquisa"])
         out["Qtd. Pesquisas"] = keys.map(ff["Qtd. Registros"])
         out["Última Pesquisa"] = keys.map(ff["Data mais recente"])
+
+    # V8.3 — nenhum campo textual fica visualmente vazio.
+    # Valores financeiros sem fonte continuam nulos: não inventamos preço/custo/mercado/volume.
+    _texto_padrao_v283 = {
+        "Laboratório": "Não informado",
+        "Família": "Não informado",
+        "Curva": "Não informado",
+        "Fonte Preço Atual": "SEM PREÇO",
+        "Data/Competência Preço": "Sem data/competência",
+        "Loja Menor Preço": "Sem pesquisa concorrente",
+        "Data Pesquisa Mercado": "Sem data na fonte",
+        "Fonte Custo": "SEM CUSTO",
+        "Motivo Custo": "CUSTO NÃO LOCALIZADO",
+        "Recomendação": "SEM DADOS PARA RECOMENDAR",
+        "Competência Volume": "Sem competência",
+        "Pendências de Dados": "Sem pendências",
+        "Status Dados": "PENDENTE",
+        "Status Pesquisa": "⏳ Pendente",
+        "Última Pesquisa": "Sem data na fonte",
+    }
+    for _c_v283, _pad_v283 in _texto_padrao_v283.items():
+        if _c_v283 not in out.columns:
+            out[_c_v283] = _pad_v283
+        else:
+            _s_v283 = out[_c_v283].fillna("").astype(str).str.strip()
+            out[_c_v283] = out[_c_v283].where(_s_v283.ne(""), _pad_v283)
+
+    # Explicita as pendências reais por EAN, sem transformar ausência em zero.
+    for _i_v283 in out.index:
+        _pend_v283 = []
+        if pd.isna(pd.to_numeric(pd.Series([out.at[_i_v283, "Preço Atual"]]), errors="coerce").iloc[0]):
+            _pend_v283.append("PREÇO")
+        if pd.isna(pd.to_numeric(pd.Series([out.at[_i_v283, "Custo Unitário"]]), errors="coerce").iloc[0]):
+            _pend_v283.append("CUSTO")
+        if pd.isna(pd.to_numeric(pd.Series([out.at[_i_v283, "Menor Preço Concorrente"]]), errors="coerce").iloc[0]):
+            _pend_v283.append("MERCADO")
+            out.at[_i_v283, "Loja Menor Preço"] = "Sem pesquisa concorrente"
+        if pd.isna(pd.to_numeric(pd.Series([out.at[_i_v283, "Volume Último Mês"]]), errors="coerce").iloc[0]):
+            _pend_v283.append("VOLUME")
+        if _pend_v283:
+            out.at[_i_v283, "Pendências de Dados"] = "; ".join(_pend_v283)
+            out.at[_i_v283, "Status Dados"] = "PENDENTE"
+        elif str(out.at[_i_v283, "Pendências de Dados"]).strip() in {"", "nan", "None"}:
+            out.at[_i_v283, "Pendências de Dados"] = "Sem pendências"
 
     return out.sort_values(["Prioridade","Ordem"], kind="stable").reset_index(drop=True)
 
@@ -19188,6 +19254,20 @@ def eirox_v282_render_analise_prioritarios(prioridades, dados):
         moeda_br(float(pd.to_numeric(vis["Ganho Potencial"],errors="coerce").fillna(0).sum()))
     )
 
+    _ordem_v284 = [
+        "Ordem","Prioridade","EAN","Produto","Laboratório","Família","Curva",
+        "Status Pesquisa","Qtd. Pesquisas","Última Pesquisa",
+        "Preço Atual","Fonte Preço Atual","Data/Competência Preço",
+        "Menor Preço Concorrente","Loja Menor Preço","Data Pesquisa Mercado",
+        "Custo Unitário","Fonte Custo","Motivo Custo","Margem Atual %",
+        "Recomendação","Preço Sugerido",
+        "Volume Último Mês","Média Venda/Dia","Faturamento Último Mês","Competência Volume",
+        "Ganho Potencial","Cobertura Dados %","Pendências de Dados","Status Dados"
+    ]
+    vis = vis[[c for c in _ordem_v284 if c in vis.columns] + [
+        c for c in vis.columns if c not in _ordem_v284
+    ]]
+
     st.dataframe(
         vis,
         use_container_width=True,
@@ -19200,6 +19280,7 @@ def eirox_v282_render_analise_prioritarios(prioridades, dados):
             "Preço Sugerido": st.column_config.NumberColumn("Preço Sugerido", format="R$ %.2f"),
             "Margem Atual %": st.column_config.NumberColumn("Margem Atual %", format="%.2f%%"),
             "Faturamento Último Mês": st.column_config.NumberColumn("Faturamento Último Mês", format="R$ %.2f"),
+            "Média Venda/Dia": st.column_config.NumberColumn("Média Venda/Dia", format="%.2f"),
             "Ganho Potencial": st.column_config.NumberColumn("Ganho Potencial", format="R$ %.2f"),
             "Cobertura Dados %": st.column_config.NumberColumn("Cobertura Dados %", format="%.0f%%"),
         }
