@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.9 — Cards Prioritários"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.10 — Quantidade de Pesquisas"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -19410,7 +19410,7 @@ def eirox_v288_tabela_prioritarios_padrao_subir(prioridades, dados):
     colunas_subir = [
         "EAN", "Produto", "Laboratório", "Ação", "Flag Preço",
         "Preço Atual", "Preço Ref. Cálculo", "Preço Mercado",
-        "Menor Preço Concorrente", "Loja do Menor Preço", "Data da Pesquisa",
+        "Menor Preço Concorrente", "Loja do Menor Preço", "Data da Pesquisa", "Qtd. Pesquisas",
         "Preço Sugerido", "Aumento Unitário", "Diferença %",
         "Qtd Vendida", "Ganho de Lucro Potencial",
         "Preço Usado no Ganho", "Custo Unitário", "Margem Atual",
@@ -19546,6 +19546,20 @@ def eirox_v288_tabela_prioritarios_padrao_subir(prioridades, dados):
         m.get("Data da Pesquisa", pd.Series("", index=m.index))
         .fillna("").astype(str)
     )
+
+    # V8.10 — quantidade total de pesquisas do EAN na VENDA_TESTE.
+    _hist_v810 = globals().get("historico", pd.DataFrame())
+    _qtd_pesq_v810 = pd.Series(0, index=m.index, dtype="int64")
+    if isinstance(_hist_v810, pd.DataFrame) and not _hist_v810.empty:
+        _ce_hist_v810 = _prio_coluna(
+            _hist_v810,
+            ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras", "codigobarras"]
+        )
+        if _ce_hist_v810:
+            _ean_hist_v810 = _hist_v810[_ce_hist_v810].apply(_prio_normalizar_ean)
+            _map_qtd_v810 = _ean_hist_v810.value_counts()
+            _qtd_pesq_v810 = m["__EAN_V288"].map(_map_qtd_v810).fillna(0).astype(int)
+    out["Qtd. Pesquisas"] = _qtd_pesq_v810.to_numpy()
 
     out["Preço Sugerido"] = ps.apply(
         lambda x: _eirox_moeda_num(x) if pd.notna(x) and x > 0 else ""
