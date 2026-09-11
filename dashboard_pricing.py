@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.14 — Quadro Prioridade Completo"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.15 — Média Venda Mês"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -19049,14 +19049,13 @@ def _prio_resumo_pesquisa(prioridades, dados):
                     pass
                 return np.nan
 
-            _dias_mes_v814 = _mes_v814.apply(_dias_v814)
-            p["Média Venda/Dia"] = (
-                _itens_v814 / pd.to_numeric(_dias_mes_v814, errors="coerce")
-            ).round(2)
+            # V8.15 — última coluna mostra a média/volume de venda do mês
+            # fechado, sem dividir pelos dias do mês.
+            p["Média Venda/Mês"] = _itens_v814.round(2)
         else:
-            p["Média Venda/Dia"] = np.nan
+            p["Média Venda/Mês"] = np.nan
     except Exception:
-        p["Média Venda/Dia"] = np.nan
+        p["Média Venda/Mês"] = np.nan
 
     return p.sort_values(["_rank", "Ordem"], na_position="last")
 
@@ -20118,15 +20117,15 @@ def eirox_render_prioridade_pesquisa(dados_contexto):
             vis = vis[vis["EAN"].astype(str).str.contains(termo, case=False, na=False) | vis["Produto"].astype(str).str.contains(termo, case=False, na=False)]
         if status != "Todos":
             vis = vis[vis["Status Pesquisa"] == status]
-        cols = [c for c in ["Ordem", "Prioridade", "EAN", "Produto", "Status Pesquisa", "Qtd. Registros", "Data mais recente", "Média Venda/Dia"] if c in vis.columns]
+        cols = [c for c in ["Ordem", "Prioridade", "EAN", "Produto", "Status Pesquisa", "Qtd. Registros", "Data mais recente", "Média Venda/Mês"] if c in vis.columns]
         st.dataframe(
             vis[cols],
             use_container_width=True,
             hide_index=True,
             height=520,
             column_config={
-                "Média Venda/Dia": st.column_config.NumberColumn(
-                    "Média Venda/Dia", format="%.2f"
+                "Média Venda/Mês": st.column_config.NumberColumn(
+                    "Média Venda/Mês", format="%.2f"
                 )
             }
         )
