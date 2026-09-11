@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.18 — Unidades sem R$"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.19 — Unidade Numeral Forçada"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -20116,8 +20116,21 @@ def eirox_render_prioridade_pesquisa(dados_contexto):
         if status != "Todos":
             vis = vis[vis["Status Pesquisa"] == status]
         cols = [c for c in ["Ordem", "Prioridade", "EAN", "Produto", "Status Pesquisa", "Qtd. Registros", "Data mais recente", "Média Venda/Mês (Unid.)", "Média Venda/Mês (R$)"] if c in vis.columns]
-        st.dataframe(
-            vis[cols],
+        # V8.19 — esta tabela precisa manter a coluna de unidades como numeral.
+        # O app possui um interceptor global de st.dataframe que transforma colunas
+        # com "Venda" em moeda. Aqui chamamos o dataframe ORIGINAL para respeitar
+        # o NumberColumn("%d") e impedir "R$" em Média Venda/Mês (Unid.).
+        _vis_tela_v819 = vis[cols].copy()
+        if "Média Venda/Mês (Unid.)" in _vis_tela_v819.columns:
+            _vis_tela_v819["Média Venda/Mês (Unid.)"] = pd.to_numeric(
+                _vis_tela_v819["Média Venda/Mês (Unid.)"], errors="coerce"
+            ).round(0).astype("Int64")
+
+        _dataframe_original_v819 = getattr(
+            st, "_eirox_dataframe_original", st.dataframe
+        )
+        _dataframe_original_v819(
+            _vis_tela_v819,
             use_container_width=True,
             hide_index=True,
             height=520,
