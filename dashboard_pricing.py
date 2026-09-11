@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.13 — Leitura Direta VENDA_TESTE"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.14 — Quadro Prioridade Completo"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -18985,6 +18985,79 @@ def _prio_resumo_pesquisa(prioridades, dados):
     p["Data mais recente"] = p["Data mais recente"].fillna("")
     p["Status Pesquisa"] = p["Qtd. Registros"].gt(0).map({True: "✅ Pesquisado", False: "⏳ Pendente"})
     p = p.drop(columns=["_EAN_PRIO"], errors="ignore")
+
+    # V8.14 — corrige o quadro superior usando as fontes reais.
+    # Data mais recente: última Data Emissão física da VENDA_TESTE por EAN.
+    try:
+        _raw_v814 = eirox_v813_mapa_pesquisas_reais()
+        if isinstance(_raw_v814, pd.DataFrame) and not _raw_v814.empty:
+            _raw_valid_v814 = _raw_v814[
+                _raw_v814["EAN_V813"].astype(str).str.len().gt(0)
+            ].copy()
+
+            _qtd_v814 = _raw_valid_v814["EAN_V813"].value_counts()
+            p["Qtd. Registros"] = (
+                p["EAN"].map(_qtd_v814).fillna(0).astype(int)
+            )
+
+            _datas_v814 = _raw_valid_v814.dropna(
+                subset=["Data_Emissao_V813"]
+            )
+            if not _datas_v814.empty:
+                _ult_v814 = (
+                    _datas_v814.groupby("EAN_V813")["Data_Emissao_V813"].max()
+                )
+                _dt_v814 = p["EAN"].map(_ult_v814)
+                p["Data mais recente"] = _dt_v814.apply(
+                    lambda x: x.strftime("%d/%m/%Y %H:%M:%S")
+                    if pd.notna(x) else ""
+                )
+            else:
+                p["Data mais recente"] = ""
+
+            p["Status Pesquisa"] = p["Qtd. Registros"].gt(0).map(
+                {True: "✅ Pesquisado", False: "⏳ Pendente"}
+            )
+    except Exception:
+        pass
+
+    # Média Venda/Dia: último mês fechado da VENDA_FINAL_TESTE.
+    try:
+        _fechado_v814 = eirox_v158_ultimo_mes_fechado_memoria(
+            globals().get("venda_rede", pd.DataFrame())
+        )
+        if isinstance(_fechado_v814, pd.DataFrame) and not _fechado_v814.empty:
+            _fv814 = _fechado_v814.copy()
+            _fv814["__EAN_V814"] = _fv814["EAN"].apply(_prio_normalizar_ean)
+            _fv814 = _fv814.drop_duplicates("__EAN_V814", keep="last")
+
+            _lk_itens_v814 = _fv814.set_index("__EAN_V814")["Itens_Mes_Fechado"]
+            _lk_mes_v814 = _fv814.set_index("__EAN_V814")["Mes_Fechado_Referencia"]
+
+            _itens_v814 = pd.to_numeric(p["EAN"].map(_lk_itens_v814), errors="coerce")
+            _mes_v814 = p["EAN"].map(_lk_mes_v814)
+
+            def _dias_v814(valor):
+                try:
+                    dt = pd.to_datetime(str(valor).strip(), errors="coerce")
+                    if pd.notna(dt):
+                        return calendar.monthrange(int(dt.year), int(dt.month))[1]
+                    mt = re.search(r"(20\\d{2})[-/](\\d{1,2})", str(valor))
+                    if mt:
+                        return calendar.monthrange(int(mt.group(1)), int(mt.group(2)))[1]
+                except Exception:
+                    pass
+                return np.nan
+
+            _dias_mes_v814 = _mes_v814.apply(_dias_v814)
+            p["Média Venda/Dia"] = (
+                _itens_v814 / pd.to_numeric(_dias_mes_v814, errors="coerce")
+            ).round(2)
+        else:
+            p["Média Venda/Dia"] = np.nan
+    except Exception:
+        p["Média Venda/Dia"] = np.nan
+
     return p.sort_values(["_rank", "Ordem"], na_position="last")
 
 
@@ -20045,8 +20118,18 @@ def eirox_render_prioridade_pesquisa(dados_contexto):
             vis = vis[vis["EAN"].astype(str).str.contains(termo, case=False, na=False) | vis["Produto"].astype(str).str.contains(termo, case=False, na=False)]
         if status != "Todos":
             vis = vis[vis["Status Pesquisa"] == status]
-        cols = [c for c in ["Ordem", "Prioridade", "EAN", "Produto", "Status Pesquisa", "Qtd. Registros", "Data mais recente", "Observacao"] if c in vis.columns]
-        st.dataframe(vis[cols], use_container_width=True, hide_index=True, height=520)
+        cols = [c for c in ["Ordem", "Prioridade", "EAN", "Produto", "Status Pesquisa", "Qtd. Registros", "Data mais recente", "Média Venda/Dia"] if c in vis.columns]
+        st.dataframe(
+            vis[cols],
+            use_container_width=True,
+            hide_index=True,
+            height=520,
+            column_config={
+                "Média Venda/Dia": st.column_config.NumberColumn(
+                    "Média Venda/Dia", format="%.2f"
+                )
+            }
+        )
         export = vis[cols].copy().to_csv(index=False, sep=";", encoding="utf-8-sig").encode("utf-8-sig")
         st.download_button("⬇️ Exportar fila de pesquisa", export, file_name="prioridade_pesquisa.csv", mime="text/csv", use_container_width=True)
 
