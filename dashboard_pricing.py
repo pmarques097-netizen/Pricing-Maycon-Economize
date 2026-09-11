@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.7 — Padrão Subir Preço"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.8 — Idêntica Subir Preço"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -19400,88 +19400,243 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
     return out.sort_values(["Prioridade","Ordem"], kind="stable").reset_index(drop=True)
 
 
-def eirox_v282_render_analise_prioritarios(prioridades, dados):
-    # Reaproveita exatamente o núcleo visual usado nas telas de ação.
-    eirox_core_css()
-    st.divider()
-    st.markdown("<div class='priority-title'>Análise Completa dos Produtos Prioritários</div>", unsafe_allow_html=True)
-    st.caption(
-        "Visão consolidada dos itens cadastrados na Prioridade de Pesquisa: "
-        "preço atual e sua origem, concorrência, custo, margem, recomendação, "
-        "volume, faturamento, ganho potencial e qualidade dos dados."
+
+def eirox_v288_tabela_prioritarios_padrao_subir(prioridades, dados):
+    """
+    Tabela da Prioridade de Pesquisa com EXATAMENTE as mesmas colunas
+    e a mesma ordem da tela SUBIR PREÇO.
+    A população, porém, continua sendo todos os EANs prioritários ativos.
+    """
+    colunas_subir = [
+        "EAN", "Produto", "Laboratório", "Ação", "Flag Preço",
+        "Preço Atual", "Preço Ref. Cálculo", "Preço Mercado",
+        "Menor Preço Concorrente", "Loja do Menor Preço", "Data da Pesquisa",
+        "Preço Sugerido", "Aumento Unitário", "Diferença %",
+        "Qtd Vendida", "Ganho de Lucro Potencial",
+        "Preço Usado no Ganho", "Custo Unitário", "Margem Atual",
+    ]
+
+    if not isinstance(prioridades, pd.DataFrame) or prioridades.empty:
+        return pd.DataFrame(columns=colunas_subir)
+    if not isinstance(dados, pd.DataFrame) or dados.empty:
+        return pd.DataFrame(columns=colunas_subir)
+
+    p = prioridades.copy()
+    p["EAN"] = p["EAN"].apply(_prio_normalizar_ean)
+    eans_prioritarios = set(p.loc[p["EAN"].str.len().gt(0), "EAN"])
+    if not eans_prioritarios:
+        return pd.DataFrame(columns=colunas_subir)
+
+    try:
+        base_enriquecida = eirox_enriquecer_menor_preco_concorrente(
+            dados.copy(),
+            globals().get("historico", pd.DataFrame())
+        )
+    except Exception:
+        base_enriquecida = dados.copy()
+
+    try:
+        motor = eirox_motor_oportunidades(base_enriquecida)
+    except Exception:
+        motor = pd.DataFrame()
+
+    if not isinstance(motor, pd.DataFrame) or motor.empty:
+        return pd.DataFrame(columns=colunas_subir)
+
+    c_ean = _eirox_first_col(motor, ["EAN", "EAN (GTIN)", "GTIN"])
+    if not c_ean:
+        return pd.DataFrame(columns=colunas_subir)
+
+    m = motor.copy()
+    m["__EAN_V288"] = _ean(m[c_ean])
+    m = m[m["__EAN_V288"].isin(eans_prioritarios)].copy()
+    if m.empty:
+        return pd.DataFrame(columns=colunas_subir)
+
+    # Volume fechado por EAN, igual à tela SUBIR PREÇO.
+    try:
+        fechado = eirox_v158_ultimo_mes_fechado_memoria(
+            globals().get("venda_rede", pd.DataFrame())
+        )
+    except Exception:
+        fechado = pd.DataFrame()
+
+    if isinstance(fechado, pd.DataFrame) and not fechado.empty and "EAN" in fechado.columns:
+        f = fechado.copy()
+        f["__EAN_V288"] = _ean(f["EAN"])
+        f = f.drop_duplicates("__EAN_V288", keep="last")
+        lkq = f.set_index("__EAN_V288")["Itens_Mes_Fechado"]
+        m["__QTD_V288"] = m["__EAN_V288"].map(lkq)
+    else:
+        m["__QTD_V288"] = np.nan
+
+    c_prod = _eirox_first_col(m, ["Produto", "Descrição", "Descricao", "Produto na Pesquisa"])
+    c_lab = _eirox_first_col(m, ["Laboratório", "Laboratorio", "Fabricante"])
+
+    out = pd.DataFrame(index=m.index)
+    out["EAN"] = m["__EAN_V288"]
+    out["Produto"] = m[c_prod].astype(str) if c_prod else ""
+
+    # Laboratório completo pela mesma hierarquia cadastral da Fase 8.5.
+    out["Laboratório"] = m[c_lab].astype(str) if c_lab else ""
+    try:
+        _cad = pd.DataFrame({"EAN": out["EAN"], "Produto": out["Produto"], "Laboratório": out["Laboratório"]})
+        _cad = eirox_v285_enriquecer_laboratorio_prioritarios(_cad, dados)
+        out["Laboratório"] = _cad["Laboratório"].to_numpy()
+    except Exception:
+        pass
+
+    out["Ação"] = m.get(
+        "Recomendacao_Central",
+        pd.Series("", index=m.index)
+    ).fillna("").astype(str)
+
+    _acao_flag = out["Ação"].fillna("").astype(str).str.upper()
+    _preco_sug_flag = pd.to_numeric(
+        m.get("Preço_Sugerido_Eirox", np.nan),
+        errors="coerce"
+    )
+    out["Flag Preço"] = np.select(
+        [
+            _preco_sug_flag.isna() | (_preco_sug_flag <= 0),
+            _acao_flag.eq("NEGOCIAR COMPRA"),
+            _acao_flag.eq("SUBIR PREÇO"),
+            _acao_flag.eq("BAIXAR PREÇO"),
+            _acao_flag.eq("MANTER"),
+        ],
+        [
+            "⛔ SEM BASE PARA CALCULAR",
+            "⚠️ CUSTO BLOQUEIA PREÇO",
+            "🚩 PREÇO CALCULADO",
+            "🚩 PREÇO CALCULADO",
+            "✅ MANTER PREÇO",
+        ],
+        default="ℹ️ REVISAR"
     )
 
-    analise = eirox_v282_analise_prioritarios(prioridades, dados)
-    if analise.empty:
-        st.info("Cadastre produtos prioritários para visualizar a análise completa.")
+    pa = pd.to_numeric(m.get("Preço_Atual_Eirox", np.nan), errors="coerce")
+    pref = pd.to_numeric(m.get("Preço_Base_Calculo_Eirox", np.nan), errors="coerce")
+    pm = pd.to_numeric(m.get("Preço_Mercado_Eirox", np.nan), errors="coerce")
+    ps = pd.to_numeric(m.get("Preço_Sugerido_Eirox", np.nan), errors="coerce")
+    cu = pd.to_numeric(m.get("Custo_Unitario_Eirox", np.nan), errors="coerce")
+    qtd = pd.to_numeric(m["__QTD_V288"], errors="coerce").fillna(0)
+
+    out["Preço Atual"] = pa.apply(
+        lambda x: _eirox_moeda_num(x) if pd.notna(x) and x > 0 else ""
+    )
+    out["Preço Ref. Cálculo"] = pref.apply(
+        lambda x: _eirox_moeda_num(x) if pd.notna(x) and x > 0 else ""
+    )
+    out["Preço Mercado"] = pm.apply(
+        lambda x: _eirox_moeda_num(x) if pd.notna(x) and x > 0 else ""
+    )
+
+    if "Menor Preço Concorrente" in m.columns:
+        out["Menor Preço Concorrente"] = pd.to_numeric(
+            m["Menor Preço Concorrente"], errors="coerce"
+        ).apply(lambda x: _eirox_moeda_num(x) if pd.notna(x) and x > 0 else "")
+    else:
+        out["Menor Preço Concorrente"] = ""
+
+    out["Loja do Menor Preço"] = (
+        m.get("Loja do Menor Preço", pd.Series("", index=m.index))
+        .fillna("").astype(str)
+    )
+    out["Data da Pesquisa"] = (
+        m.get("Data da Pesquisa", pd.Series("", index=m.index))
+        .fillna("").astype(str)
+    )
+
+    out["Preço Sugerido"] = ps.apply(
+        lambda x: _eirox_moeda_num(x) if pd.notna(x) and x > 0 else ""
+    )
+
+    aumento = (ps - pa)
+    out["Aumento Unitário"] = aumento.apply(
+        lambda x: _eirox_moeda_num(x) if pd.notna(x) else ""
+    )
+    diferenca = np.where(pa.gt(0), (ps - pa) / pa, np.nan)
+    out["Diferença %"] = pd.Series(diferenca, index=m.index).apply(
+        lambda x: _eirox_pct_num(x) if pd.notna(x) else ""
+    )
+
+    out["Qtd Vendida"] = qtd.round(0).astype(int)
+
+    ganho_pot = (ps - pa).clip(lower=0).fillna(0) * qtd
+    out["Ganho de Lucro Potencial"] = ganho_pot.apply(_eirox_moeda_num)
+
+    out["Preço Usado no Ganho"] = pa.apply(
+        lambda x: _eirox_moeda_num(x) if pd.notna(x) and x > 0 else ""
+    )
+    out["Custo Unitário"] = cu.apply(
+        lambda x: _eirox_moeda_num(x) if pd.notna(x) and x > 0 else ""
+    )
+
+    margem = np.where(pa.gt(0), (pa - cu) / pa, np.nan)
+    out["Margem Atual"] = pd.Series(margem, index=m.index).apply(
+        lambda x: _eirox_pct_num(x) if pd.notna(x) else ""
+    )
+
+    # Barreira final V7.1 também nesta tabela.
+    out = eirox_v271_aplicar_preco_canonico_tabela(out)
+
+    # A barreira V7.1 acrescenta colunas de auditoria; nesta tela elas são
+    # removidas para manter EXATAMENTE o mesmo desenho de SUBIR PREÇO.
+    for c in list(out.columns):
+        if c not in colunas_subir:
+            out = out.drop(columns=[c])
+
+    # Reordenação final determinística.
+    for c in colunas_subir:
+        if c not in out.columns:
+            out[c] = ""
+    return out[colunas_subir].reset_index(drop=True)
+
+
+def eirox_v288_render_analise_prioritarios(prioridades, dados):
+    """Render idêntico à lista da tela SUBIR PREÇO, inclusive colunas e exportações."""
+    eirox_core_css()
+
+    tab = eirox_v288_tabela_prioritarios_padrao_subir(prioridades, dados)
+
+    st.markdown("<div class='priority-title'>Lista priorizada</div>", unsafe_allow_html=True)
+    st.caption(
+        f"Exibindo todos os {len(tab):,} produtos cadastrados na Prioridade de Pesquisa."
+        .replace(",", ".")
+    )
+
+    if tab.empty:
+        st.info("Nenhum produto prioritário disponível para análise.")
         return
 
-    f1, f2, f3 = st.columns([1,1,2])
-    recs = sorted([x for x in analise["Recomendação"].fillna("").astype(str).unique() if x.strip()])
-    rec_sel = f1.multiselect("Recomendação", recs, key="v282_rec")
-    status_opts = sorted([x for x in analise.get("Status Pesquisa", pd.Series(dtype=str)).fillna("").astype(str).unique() if x.strip()])
-    status_sel = f2.multiselect("Status da pesquisa", status_opts, key="v282_status")
-    busca = f3.text_input("Buscar na análise por EAN ou produto", key="v282_busca").strip()
-
-    vis = analise.copy()
-    if rec_sel:
-        vis = vis[vis["Recomendação"].isin(rec_sel)].copy()
-    if status_sel and "Status Pesquisa" in vis.columns:
-        vis = vis[vis["Status Pesquisa"].isin(status_sel)].copy()
-    if busca:
-        vis = vis[
-            vis["EAN"].astype(str).str.contains(busca, case=False, na=False, regex=False)
-            | vis["Produto"].astype(str).str.contains(busca, case=False, na=False, regex=False)
-        ].copy()
-
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Itens analisados", f"{len(vis):,}".replace(",", "."))
-    c2.metric(
-        "Com preço atual",
-        f"{pd.to_numeric(vis['Preço Atual'],errors='coerce').gt(0).sum():,}".replace(",", ".")
-    )
-    c3.metric(
-        "Com custo",
-        f"{pd.to_numeric(vis['Custo Unitário'],errors='coerce').gt(0).sum():,}".replace(",", ".")
-    )
-    c4.metric(
-        "Ganho potencial",
-        moeda_br(float(pd.to_numeric(vis["Ganho Potencial"],errors="coerce").fillna(0).sum()))
-    )
-
-    _ordem_v284 = [
-        "Ordem","Prioridade","EAN","Produto","Laboratório","Fonte Laboratório","Família","Fonte Família","Curva",
-        "Status Pesquisa","Qtd. Pesquisas","Última Pesquisa",
-        "Preço Atual","Fonte Preço Atual","Data/Competência Preço",
-        "Menor Preço Concorrente","Loja Menor Preço","Data Pesquisa Mercado",
-        "Custo Unitário","Fonte Custo","Motivo Custo","Margem Atual %",
-        "Recomendação","Preço Sugerido",
-        "Volume Último Mês","Média Venda/Dia","Faturamento Último Mês","Competência Volume",
-        "Ganho Potencial","Cobertura Dados %","Pendências de Dados","Status Dados"
-    ]
-    vis = vis[[c for c in _ordem_v284 if c in vis.columns] + [
-        c for c in vis.columns if c not in _ordem_v284
-    ]]
-
-    # V8.7 — mesmo padrão visual oficial da tela Subir Preço.
-    # Mantém a base numérica para exportação; a formatação pt-BR ocorre somente na visualização.
-    vis_core = vis.copy()
-
     eirox_dataframe_brl(
-        eirox_estilizar_tabela_core(vis_core),
+        eirox_estilizar_tabela_core(tab),
         use_container_width=True,
         hide_index=True,
-        height=560,
+        height=560
     )
 
     if globals().get("pode_exportar", True):
-        eirox_botao_excel_padrao(
-            vis,
-            titulo="Análise Completa — Prioridade de Pesquisa",
-            arquivo="Eirox_Analise_Completa_Prioridade_Pesquisa.xlsx",
-            key="v282_excel_prioridade",
+        st.download_button(
+            "📥 Exportar lista",
+            tab.to_csv(index=False, sep=";").encode("utf-8-sig"),
+            "prioridade_pesquisa.csv",
+            "text/csv",
             use_container_width=True,
+            key="export_core_prioridade_v288"
         )
+        eirox_botao_excel_padrao(
+            tab,
+            "Lista de Pricing",
+            "lista_pricing_prioridade.xlsx",
+            key="excel_core_prioridade_v288",
+            use_container_width=True
+        )
+
+
+def eirox_v282_render_analise_prioritarios(prioridades, dados):
+    # V8.8 — espelho exato da tela SUBIR PREÇO: mesmo padrão e mesmas colunas.
+    return eirox_v288_render_analise_prioritarios(prioridades, dados)
 
 
 def eirox_render_prioridade_pesquisa(dados_contexto):
