@@ -1390,8 +1390,7 @@ def garantir_colunas_padrao_dashboard(df_base):
         df_base = df_base.copy()
 
         padroes = {
-            "Família": "Não informado",
-            "Familia": "Não informado",
+                "Familia": "Não informado",
             "CURVA": "Não informado",
             "Recomendacao": "MANTER",
             "Laboratório": "Não informado",
@@ -8044,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.5 — Laboratório Completo"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.6 — Família Completa"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -19082,6 +19081,100 @@ def eirox_v285_enriquecer_laboratorio_prioritarios(out, dados_principal):
     return r
 
 
+
+def eirox_v286_familia_valida(valor):
+    txt = "" if pd.isna(valor) else str(valor).strip()
+    return bool(
+        txt
+        and txt.lower() not in {
+            "nan", "none", "null", "não informado", "nao informado",
+            "família pendente", "familia pendente", "-", "--"
+        }
+    )
+
+
+def eirox_v286_mapa_familia(base, nome_fonte):
+    """Retorna a classificação de família válida por EAN."""
+    if not isinstance(base, pd.DataFrame) or base.empty:
+        return pd.DataFrame(columns=["EAN_V286", "Família_V286", "Fonte_Família_V286"])
+
+    d = eirox_normalizar_colunas_planilha(base.copy())
+    ce = eirox_coluna(
+        d,
+        ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras",
+         "codigobarras", "Cód. Barras/Etiq.", "Cod Barras", "Barras"]
+    )
+    cf = eirox_coluna(
+        d,
+        ["Família", "Familia", "FAMÍLIA", "FAMILIA",
+         "Classificação", "Classificacao",
+         "Classificação Principal", "Classificacao Principal",
+         "Categoria", "Caminho"]
+    )
+    if not ce or not cf:
+        return pd.DataFrame(columns=["EAN_V286", "Família_V286", "Fonte_Família_V286"])
+
+    x = pd.DataFrame({
+        "EAN_V286": d[ce].apply(_prio_normalizar_ean),
+        "Família_V286": d[cf].fillna("").astype(str).str.strip(),
+    })
+    x = x[
+        x["EAN_V286"].str.len().gt(0)
+        & x["Família_V286"].apply(eirox_v286_familia_valida)
+    ].copy()
+    if x.empty:
+        return pd.DataFrame(columns=["EAN_V286", "Família_V286", "Fonte_Família_V286"])
+
+    # Em duplicidade, preserva a classificação válida mais recorrente da fonte.
+    x = (
+        x.groupby("EAN_V286", as_index=False)["Família_V286"]
+        .agg(lambda s: s.value_counts(dropna=True).index[0] if not s.empty else "")
+    )
+    x["Fonte_Família_V286"] = nome_fonte
+    return x
+
+
+def eirox_v286_enriquecer_familia_prioritarios(out, dados_principal):
+    """
+    Hierarquia cadastral por EAN:
+    BASE PRINCIPAL → ESTOQUE_TESTE → COMPRA_TESTE → VENDA_FINAL_TESTE → VENDA_TESTE.
+    COMPRA_TESTE é usada aqui SOMENTE para classificação/cadastro.
+    """
+    if not isinstance(out, pd.DataFrame) or out.empty or "EAN" not in out.columns:
+        return out
+
+    r = out.copy()
+    keys = r["EAN"].apply(_prio_normalizar_ean)
+    familia_final = pd.Series("", index=r.index, dtype="object")
+    fonte_final = pd.Series("", index=r.index, dtype="object")
+
+    fontes = [
+        (dados_principal, "BASE PRINCIPAL"),
+        (globals().get("estoque", pd.DataFrame()), "ESTOQUE_TESTE"),
+        (globals().get("compra", pd.DataFrame()), "COMPRA_TESTE"),
+        (globals().get("venda_rede", pd.DataFrame()), "VENDA_FINAL_TESTE"),
+        (globals().get("historico", pd.DataFrame()), "VENDA_TESTE"),
+    ]
+
+    for base_fonte, nome_fonte in fontes:
+        mapa = eirox_v286_mapa_familia(base_fonte, nome_fonte)
+        if mapa.empty:
+            continue
+        lk = mapa.set_index("EAN_V286")["Família_V286"]
+        candidato = keys.map(lk).fillna("").astype(str).str.strip()
+        preencher = ~familia_final.apply(eirox_v286_familia_valida) & candidato.apply(eirox_v286_familia_valida)
+        familia_final.loc[preencher] = candidato.loc[preencher]
+        fonte_final.loc[preencher] = nome_fonte
+
+    pendente = ~familia_final.apply(eirox_v286_familia_valida)
+    familia_final.loc[pendente] = "FAMÍLIA PENDENTE"
+    fonte_final.loc[pendente] = "NÃO LOCALIZADA NAS BASES"
+
+    r["Família"] = familia_final
+    r["Fonte Família"] = fonte_final
+    return r
+
+
 def eirox_v282_analise_prioritarios(prioridades, dados):
     """Análise financeira/comercial completa dos EANs ativos da Prioridade de Pesquisa."""
     if not isinstance(prioridades, pd.DataFrame) or prioridades.empty:
@@ -19135,6 +19228,8 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
     # Busca cadastral por EAN nas fontes oficiais, sem alterar regras de custo.
     out = eirox_v285_enriquecer_laboratorio_prioritarios(out, dados)
     out["Família"] = mapcol(["Família","Familia"], "")
+    # V8.6 — família/classificação cadastral não pode ficar "Não informado".
+    out = eirox_v286_enriquecer_familia_prioritarios(out, dados)
     out["Curva"] = mapcol(["CURVA","Curva"], "")
 
     # Preço atual — regra estrita V7.1
@@ -19285,6 +19380,8 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
         _pend_v283 = []
         if not eirox_v285_lab_valido(out.at[_i_v283, "Laboratório"]):
             _pend_v283.append("LABORATÓRIO")
+        if not eirox_v286_familia_valida(out.at[_i_v283, "Família"]):
+            _pend_v283.append("FAMÍLIA")
         if pd.isna(pd.to_numeric(pd.Series([out.at[_i_v283, "Preço Atual"]]), errors="coerce").iloc[0]):
             _pend_v283.append("PREÇO")
         if pd.isna(pd.to_numeric(pd.Series([out.at[_i_v283, "Custo Unitário"]]), errors="coerce").iloc[0]):
@@ -19351,7 +19448,7 @@ def eirox_v282_render_analise_prioritarios(prioridades, dados):
     )
 
     _ordem_v284 = [
-        "Ordem","Prioridade","EAN","Produto","Laboratório","Fonte Laboratório","Família","Curva",
+        "Ordem","Prioridade","EAN","Produto","Laboratório","Fonte Laboratório","Família","Fonte Família","Curva",
         "Status Pesquisa","Qtd. Pesquisas","Última Pesquisa",
         "Preço Atual","Fonte Preço Atual","Data/Competência Preço",
         "Menor Preço Concorrente","Loja Menor Preço","Data Pesquisa Mercado",
