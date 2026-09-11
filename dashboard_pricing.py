@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.17 — Unidades Numéricas"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.18 — Unidades sem R$"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -8154,18 +8154,22 @@ def _eirox_tipo_coluna_br(nome_coluna):
     ]):
         return "percentual"
 
+    # V8.18 — colunas explicitamente de unidades/quantidade têm prioridade
+    # sobre palavras financeiras como "venda". Ex.: "Média Venda/Mês (Unid.)"
+    # deve ser exibida como número inteiro, nunca como R$.
+    if any(t in nome for t in [
+        "qtd", "qtde", "quantidade", "unidade", "unidades", "unid", "(unid.)",
+        "estoque", "itens", "produtos", "skus", "ranking", "posição", "posicao",
+        "arquivos", "registros"
+    ]):
+        return "inteiro"
+
     if any(t in nome for t in [
         "preço", "preco", "custo", "valor", "faturamento", "venda",
         "receita", "lucro", "ganho", "potencial", "captura", "ticket",
         "despesa", "saldo", "total r$", "r$", "recomendado", "sugerido"
     ]):
         return "moeda"
-
-    if any(t in nome for t in [
-        "qtd", "qtde", "quantidade", "unidades", "estoque", "itens",
-        "produtos", "skus", "ranking", "posição", "posicao", "arquivos", "registros"
-    ]):
-        return "inteiro"
 
     if "score" in nome or "índice" in nome or "indice" in nome:
         return "numero"
