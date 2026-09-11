@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.6 — Família Completa"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.7 — Padrão Subir Preço"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -19401,8 +19401,10 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
 
 
 def eirox_v282_render_analise_prioritarios(prioridades, dados):
+    # Reaproveita exatamente o núcleo visual usado nas telas de ação.
+    eirox_core_css()
     st.divider()
-    st.markdown("## 📊 Análise Completa dos Produtos Prioritários")
+    st.markdown("<div class='priority-title'>Análise Completa dos Produtos Prioritários</div>", unsafe_allow_html=True)
     st.caption(
         "Visão consolidada dos itens cadastrados na Prioridade de Pesquisa: "
         "preço atual e sua origem, concorrência, custo, margem, recomendação, "
@@ -19461,22 +19463,15 @@ def eirox_v282_render_analise_prioritarios(prioridades, dados):
         c for c in vis.columns if c not in _ordem_v284
     ]]
 
-    st.dataframe(
-        vis,
+    # V8.7 — mesmo padrão visual oficial da tela Subir Preço.
+    # Mantém a base numérica para exportação; a formatação pt-BR ocorre somente na visualização.
+    vis_core = vis.copy()
+
+    eirox_dataframe_brl(
+        eirox_estilizar_tabela_core(vis_core),
         use_container_width=True,
         hide_index=True,
-        height=620,
-        column_config={
-            "Preço Atual": st.column_config.NumberColumn("Preço Atual", format="R$ %.2f"),
-            "Menor Preço Concorrente": st.column_config.NumberColumn("Menor Preço Concorrente", format="R$ %.2f"),
-            "Custo Unitário": st.column_config.NumberColumn("Custo Unitário", format="R$ %.2f"),
-            "Preço Sugerido": st.column_config.NumberColumn("Preço Sugerido", format="R$ %.2f"),
-            "Margem Atual %": st.column_config.NumberColumn("Margem Atual %", format="%.2f%%"),
-            "Faturamento Último Mês": st.column_config.NumberColumn("Faturamento Último Mês", format="R$ %.2f"),
-            "Média Venda/Dia": st.column_config.NumberColumn("Média Venda/Dia", format="%.2f"),
-            "Ganho Potencial": st.column_config.NumberColumn("Ganho Potencial", format="R$ %.2f"),
-            "Cobertura Dados %": st.column_config.NumberColumn("Cobertura Dados %", format="%.0f%%"),
-        }
+        height=560,
     )
 
     if globals().get("pode_exportar", True):
@@ -21850,17 +21845,21 @@ def eirox_estilizar_tabela_core(df):
 
     if "Ação" in df.columns:
         styler = styler.map(_cor_acao_core, subset=["Ação"])
+    if "Recomendação" in df.columns:
+        styler = styler.map(_cor_acao_core, subset=["Recomendação"])
 
     if "Flag Preço" in df.columns:
         styler = styler.map(_cor_flag_preco, subset=["Flag Preço"])
 
     if "Margem Atual" in df.columns:
         styler = styler.map(_cor_margem_core, subset=["Margem Atual"])
+    if "Margem Atual %" in df.columns:
+        styler = styler.map(_cor_margem_core, subset=["Margem Atual %"])
 
     if "Impacto" in df.columns:
         styler = styler.map(_cor_impacto_core, subset=["Impacto"])
 
-    for _c_lucro in ["Ganho de Lucro Unitário", "Ganho de Lucro Potencial"]:
+    for _c_lucro in ["Ganho de Lucro Unitário", "Ganho de Lucro Potencial", "Ganho Potencial"]:
         if _c_lucro in df.columns:
             styler = styler.map(_cor_impacto_core, subset=[_c_lucro])
 
