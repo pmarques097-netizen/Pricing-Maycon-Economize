@@ -8044,7 +8044,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.4 — Média de Venda"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.5 — Laboratório Completo"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -18990,6 +18990,98 @@ def _prio_resumo_pesquisa(prioridades, dados):
 
 
 
+
+def eirox_v285_lab_valido(valor):
+    txt = "" if pd.isna(valor) else str(valor).strip()
+    return bool(
+        txt
+        and txt.lower() not in {
+            "nan", "none", "null", "não informado", "nao informado",
+            "laboratório pendente", "laboratorio pendente", "-", "--"
+        }
+    )
+
+
+def eirox_v285_mapa_laboratorio(base, nome_fonte):
+    """Retorna um laboratório/fabricante cadastral válido por EAN."""
+    if not isinstance(base, pd.DataFrame) or base.empty:
+        return pd.DataFrame(columns=["EAN_V285", "Laboratório_V285", "Fonte_Laboratório_V285"])
+
+    d = eirox_normalizar_colunas_planilha(base.copy())
+    ce = eirox_coluna(
+        d,
+        ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras",
+         "codigobarras", "Cód. Barras/Etiq.", "Cod Barras", "Barras"]
+    )
+    cl = eirox_coluna(
+        d,
+        ["Laboratório", "Laboratorio", "LABORATORIO",
+         "Fabricante", "FABRICANTE", "Marca", "MARCA"]
+    )
+    if not ce or not cl:
+        return pd.DataFrame(columns=["EAN_V285", "Laboratório_V285", "Fonte_Laboratório_V285"])
+
+    x = pd.DataFrame({
+        "EAN_V285": d[ce].apply(_prio_normalizar_ean),
+        "Laboratório_V285": d[cl].fillna("").astype(str).str.strip(),
+    })
+    x = x[
+        x["EAN_V285"].str.len().gt(0)
+        & x["Laboratório_V285"].apply(eirox_v285_lab_valido)
+    ].copy()
+    if x.empty:
+        return pd.DataFrame(columns=["EAN_V285", "Laboratório_V285", "Fonte_Laboratório_V285"])
+
+    # Em caso de repetição do EAN, usa o laboratório válido mais frequente da fonte.
+    x = (
+        x.groupby("EAN_V285", as_index=False)["Laboratório_V285"]
+        .agg(lambda s: s.value_counts(dropna=True).index[0] if not s.empty else "")
+    )
+    x["Fonte_Laboratório_V285"] = nome_fonte
+    return x
+
+
+def eirox_v285_enriquecer_laboratorio_prioritarios(out, dados_principal):
+    """
+    Hierarquia cadastral por EAN:
+    BASE PRINCIPAL → ESTOQUE_TESTE → COMPRA_TESTE → VENDA_FINAL_TESTE → VENDA_TESTE.
+    COMPRA_TESTE é usada aqui SOMENTE para cadastro de laboratório/fabricante.
+    """
+    if not isinstance(out, pd.DataFrame) or out.empty or "EAN" not in out.columns:
+        return out
+
+    r = out.copy()
+    keys = r["EAN"].apply(_prio_normalizar_ean)
+    lab_final = pd.Series("", index=r.index, dtype="object")
+    fonte_final = pd.Series("", index=r.index, dtype="object")
+
+    fontes = [
+        (dados_principal, "BASE PRINCIPAL"),
+        (globals().get("estoque", pd.DataFrame()), "ESTOQUE_TESTE"),
+        (globals().get("compra", pd.DataFrame()), "COMPRA_TESTE"),
+        (globals().get("venda_rede", pd.DataFrame()), "VENDA_FINAL_TESTE"),
+        (globals().get("historico", pd.DataFrame()), "VENDA_TESTE"),
+    ]
+
+    for base_fonte, nome_fonte in fontes:
+        mapa = eirox_v285_mapa_laboratorio(base_fonte, nome_fonte)
+        if mapa.empty:
+            continue
+        lk_lab = mapa.set_index("EAN_V285")["Laboratório_V285"]
+        candidato = keys.map(lk_lab).fillna("").astype(str).str.strip()
+        preencher = ~lab_final.apply(eirox_v285_lab_valido) & candidato.apply(eirox_v285_lab_valido)
+        lab_final.loc[preencher] = candidato.loc[preencher]
+        fonte_final.loc[preencher] = nome_fonte
+
+    pendente = ~lab_final.apply(eirox_v285_lab_valido)
+    lab_final.loc[pendente] = "LABORATÓRIO PENDENTE"
+    fonte_final.loc[pendente] = "NÃO LOCALIZADO NAS BASES"
+
+    r["Laboratório"] = lab_final
+    r["Fonte Laboratório"] = fonte_final
+    return r
+
+
 def eirox_v282_analise_prioritarios(prioridades, dados):
     """Análise financeira/comercial completa dos EANs ativos da Prioridade de Pesquisa."""
     if not isinstance(prioridades, pd.DataFrame) or prioridades.empty:
@@ -19039,6 +19131,9 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
         prod_motor.fillna("").astype(str)
     )
     out["Laboratório"] = mapcol(["Laboratório","Laboratorio","Fabricante"], "")
+    # V8.5 — laboratório/fabricante não pode permanecer incompleto.
+    # Busca cadastral por EAN nas fontes oficiais, sem alterar regras de custo.
+    out = eirox_v285_enriquecer_laboratorio_prioritarios(out, dados)
     out["Família"] = mapcol(["Família","Familia"], "")
     out["Curva"] = mapcol(["CURVA","Curva"], "")
 
@@ -19163,7 +19258,6 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
     # V8.3 — nenhum campo textual fica visualmente vazio.
     # Valores financeiros sem fonte continuam nulos: não inventamos preço/custo/mercado/volume.
     _texto_padrao_v283 = {
-        "Laboratório": "Não informado",
         "Família": "Não informado",
         "Curva": "Não informado",
         "Fonte Preço Atual": "SEM PREÇO",
@@ -19189,6 +19283,8 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
     # Explicita as pendências reais por EAN, sem transformar ausência em zero.
     for _i_v283 in out.index:
         _pend_v283 = []
+        if not eirox_v285_lab_valido(out.at[_i_v283, "Laboratório"]):
+            _pend_v283.append("LABORATÓRIO")
         if pd.isna(pd.to_numeric(pd.Series([out.at[_i_v283, "Preço Atual"]]), errors="coerce").iloc[0]):
             _pend_v283.append("PREÇO")
         if pd.isna(pd.to_numeric(pd.Series([out.at[_i_v283, "Custo Unitário"]]), errors="coerce").iloc[0]):
@@ -19255,7 +19351,7 @@ def eirox_v282_render_analise_prioritarios(prioridades, dados):
     )
 
     _ordem_v284 = [
-        "Ordem","Prioridade","EAN","Produto","Laboratório","Família","Curva",
+        "Ordem","Prioridade","EAN","Produto","Laboratório","Fonte Laboratório","Família","Curva",
         "Status Pesquisa","Qtd. Pesquisas","Última Pesquisa",
         "Preço Atual","Fonte Preço Atual","Data/Competência Preço",
         "Menor Preço Concorrente","Loja Menor Preço","Data Pesquisa Mercado",
