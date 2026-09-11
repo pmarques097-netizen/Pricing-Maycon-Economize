@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.8 — Idêntica Subir Preço"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.9 — Cards Prioritários"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -19598,6 +19598,116 @@ def eirox_v288_render_analise_prioritarios(prioridades, dados):
     eirox_core_css()
 
     tab = eirox_v288_tabela_prioritarios_padrao_subir(prioridades, dados)
+
+    # V8.9 — cards de resumo no mesmo padrão visual da tela SUBIR PREÇO.
+    if isinstance(tab, pd.DataFrame) and not tab.empty:
+        def _v289_num_money(serie):
+            try:
+                return pd.to_numeric(
+                    serie.astype(str)
+                    .str.replace("R$", "", regex=False)
+                    .str.replace(".", "", regex=False)
+                    .str.replace(",", ".", regex=False)
+                    .str.strip(),
+                    errors="coerce"
+                )
+            except Exception:
+                return pd.Series(dtype="float64")
+
+        def _v289_num_pct(serie):
+            try:
+                return pd.to_numeric(
+                    serie.astype(str)
+                    .str.replace("%", "", regex=False)
+                    .str.replace(".", "", regex=False)
+                    .str.replace(",", ".", regex=False)
+                    .str.strip(),
+                    errors="coerce"
+                )
+            except Exception:
+                return pd.Series(dtype="float64")
+
+        _qtd_v289 = int(len(tab))
+
+        _ganho_v289 = 0.0
+        if "Ganho de Lucro Potencial" in tab.columns:
+            _s_ganho_v289 = _v289_num_money(tab["Ganho de Lucro Potencial"])
+            _ganho_v289 = float(_s_ganho_v289.fillna(0).sum()) if not _s_ganho_v289.empty else 0.0
+
+        _dif_media_v289 = np.nan
+        if "Diferença %" in tab.columns:
+            _s_dif_v289 = _v289_num_pct(tab["Diferença %"]).dropna()
+            if not _s_dif_v289.empty:
+                _dif_media_v289 = float(_s_dif_v289.mean()) / 100.0
+
+        _margem_media_v289 = np.nan
+        if "Margem Atual" in tab.columns:
+            _s_margem_v289 = _v289_num_pct(tab["Margem Atual"]).dropna()
+            if not _s_margem_v289.empty:
+                _margem_media_v289 = float(_s_margem_v289.mean()) / 100.0
+
+        _c1_v289, _c2_v289, _c3_v289, _c4_v289 = st.columns(4)
+        _c1_v289.markdown(
+            eirox_core_card_html(
+                "Produtos prioritários",
+                f"{_qtd_v289:,}".replace(",", "."),
+                "",
+                "green"
+            ),
+            unsafe_allow_html=True
+        )
+        _c2_v289.markdown(
+            eirox_core_card_html(
+                "Ganho de lucro potencial",
+                _eirox_moeda_num(_ganho_v289),
+                "",
+                "green"
+            ),
+            unsafe_allow_html=True
+        )
+        _c3_v289.markdown(
+            eirox_core_card_html(
+                "Diferença média",
+                _eirox_pct_num(_dif_media_v289) if pd.notna(_dif_media_v289) else "-",
+                "",
+                "green"
+            ),
+            unsafe_allow_html=True
+        )
+        _c4_v289.markdown(
+            eirox_core_card_html(
+                "Margem atual média",
+                _eirox_pct_num(_margem_media_v289) if pd.notna(_margem_media_v289) else "-",
+                "",
+                "green"
+            ),
+            unsafe_allow_html=True
+        )
+
+        # Segunda linha: distribuição das ações dos itens prioritários.
+        _acao_v289 = tab.get("Ação", pd.Series("", index=tab.index)).fillna("").astype(str).str.upper()
+        _subir_v289 = int(_acao_v289.eq("SUBIR PREÇO").sum())
+        _baixar_v289 = int(_acao_v289.eq("BAIXAR PREÇO").sum())
+        _negociar_v289 = int(_acao_v289.eq("NEGOCIAR COMPRA").sum())
+        _manter_v289 = int(_acao_v289.eq("MANTER").sum())
+
+        _a1_v289, _a2_v289, _a3_v289, _a4_v289 = st.columns(4)
+        _a1_v289.markdown(
+            eirox_core_card_html("Subir Preço", f"{_subir_v289:,}".replace(",", "."), "", "green"),
+            unsafe_allow_html=True
+        )
+        _a2_v289.markdown(
+            eirox_core_card_html("Baixar Preço", f"{_baixar_v289:,}".replace(",", "."), "", "red"),
+            unsafe_allow_html=True
+        )
+        _a3_v289.markdown(
+            eirox_core_card_html("Negociar Compra", f"{_negociar_v289:,}".replace(",", "."), "", "yellow"),
+            unsafe_allow_html=True
+        )
+        _a4_v289.markdown(
+            eirox_core_card_html("Manter", f"{_manter_v289:,}".replace(",", "."), "", "green"),
+            unsafe_allow_html=True
+        )
 
     st.markdown("<div class='priority-title'>Lista priorizada</div>", unsafe_allow_html=True)
     st.caption(
