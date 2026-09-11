@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.10 — Quantidade de Pesquisas"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.11 — Data da Pesquisa Corrigida"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -19547,19 +19547,55 @@ def eirox_v288_tabela_prioritarios_padrao_subir(prioridades, dados):
         .fillna("").astype(str)
     )
 
-    # V8.10 — quantidade total de pesquisas do EAN na VENDA_TESTE.
+    # V8.11 — quantidade e data mais recente vêm da MESMA pesquisa na VENDA_TESTE.
+    # Se existe pesquisa para o EAN, a data não pode ficar "Sem data na fonte".
     _hist_v810 = globals().get("historico", pd.DataFrame())
     _qtd_pesq_v810 = pd.Series(0, index=m.index, dtype="int64")
+    _data_pesq_v811 = pd.Series("", index=m.index, dtype="object")
     if isinstance(_hist_v810, pd.DataFrame) and not _hist_v810.empty:
         _ce_hist_v810 = _prio_coluna(
             _hist_v810,
             ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras", "Codigo de Barras", "codigobarras"]
         )
+        _cd_hist_v811 = _prio_coluna(
+            _hist_v810,
+            ["Data Emissão", "Data Emissao", "Data da Pesquisa", "Data Pesquisa",
+             "Data_Pesquisa", "Data", "Data/Hora", "Data Hora", "DataHora"]
+        )
         if _ce_hist_v810:
-            _ean_hist_v810 = _hist_v810[_ce_hist_v810].apply(_prio_normalizar_ean)
-            _map_qtd_v810 = _ean_hist_v810.value_counts()
+            _hist_tmp_v811 = _hist_v810.copy()
+            _hist_tmp_v811["__EAN_V811"] = _hist_tmp_v811[_ce_hist_v810].apply(_prio_normalizar_ean)
+            _hist_tmp_v811 = _hist_tmp_v811[_hist_tmp_v811["__EAN_V811"].str.len().gt(0)].copy()
+
+            _map_qtd_v810 = _hist_tmp_v811["__EAN_V811"].value_counts()
             _qtd_pesq_v810 = m["__EAN_V288"].map(_map_qtd_v810).fillna(0).astype(int)
+
+            if _cd_hist_v811:
+                _hist_tmp_v811["__DATA_V811"] = pd.to_datetime(
+                    _hist_tmp_v811[_cd_hist_v811], errors="coerce", dayfirst=True
+                )
+                _datas_validas_v811 = _hist_tmp_v811.dropna(subset=["__DATA_V811"])
+                if not _datas_validas_v811.empty:
+                    _map_data_v811 = (
+                        _datas_validas_v811.groupby("__EAN_V811")["__DATA_V811"].max()
+                    )
+                    _data_dt_v811 = m["__EAN_V288"].map(_map_data_v811)
+                    _data_pesq_v811 = _data_dt_v811.apply(
+                        lambda x: x.strftime("%d/%m/%Y") if pd.notna(x) else ""
+                    )
+
     out["Qtd. Pesquisas"] = _qtd_pesq_v810.to_numpy()
+
+    # Prioriza a data apurada diretamente na VENDA_TESTE. Mantém a data do motor
+    # somente quando ela já é válida e não há data parseável na fonte.
+    _data_motor_v811 = out["Data da Pesquisa"].fillna("").astype(str).str.strip()
+    _data_motor_valida_v811 = ~_data_motor_v811.str.lower().isin(
+        {"", "nan", "nat", "none", "sem data na fonte"}
+    )
+    _data_final_v811 = _data_pesq_v811.copy()
+    _usar_motor_v811 = _data_final_v811.eq("") & _data_motor_valida_v811
+    _data_final_v811.loc[_usar_motor_v811] = _data_motor_v811.loc[_usar_motor_v811]
+    out["Data da Pesquisa"] = _data_final_v811.to_numpy()
 
     out["Preço Sugerido"] = ps.apply(
         lambda x: _eirox_moeda_num(x) if pd.notna(x) and x > 0 else ""
