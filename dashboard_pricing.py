@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.12 — Data Emissão Real VENDA_TESTE"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.13 — Leitura Direta VENDA_TESTE"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -19401,6 +19401,244 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
 
 
 
+
+# ==========================================================
+# V8.13 — DATA REAL DIRETO DOS ARQUIVOS VENDA_TESTE
+# ==========================================================
+def eirox_v813_normalizar_loja(valor):
+    txt = "" if pd.isna(valor) else str(valor).strip().casefold()
+    txt = unicodedata.normalize("NFKD", txt)
+    txt = "".join(c for c in txt if not unicodedata.combining(c))
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt
+
+
+@st.cache_resource(show_spinner=False, max_entries=8)
+def eirox_v813_ler_venda_teste_raw(assinatura):
+    """
+    Lê DIRETAMENTE os arquivos físicos da pasta VENDA_TESTE.
+    Não usa 'historico' processado, porque algumas etapas podem remover
+    a coluna Data Emissão.
+    """
+    pasta = Path(__file__).resolve().parent / "VENDA_TESTE"
+    frames = []
+
+    try:
+        arquivos = sorted(
+            [
+                p for p in (
+                    list(pasta.glob("*.xlsx"))
+                    + list(pasta.glob("*.xls"))
+                    + list(pasta.glob("*.csv"))
+                )
+                if not p.name.startswith("~$")
+            ],
+            key=lambda p: p.name
+        )
+    except Exception:
+        arquivos = []
+
+    for p in arquivos:
+        try:
+            if p.suffix.lower() == ".csv":
+                try:
+                    df = pd.read_csv(
+                        p, sep=None, engine="python", dtype=str,
+                        encoding="utf-8-sig"
+                    )
+                except Exception:
+                    df = pd.read_csv(
+                        p, sep=None, engine="python", dtype=str,
+                        encoding_errors="ignore"
+                    )
+            else:
+                df = pd.read_excel(
+                    p,
+                    dtype=str
+                )
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                df = df.copy()
+                df["__ARQUIVO_V813"] = p.name
+                frames.append(df)
+        except Exception:
+            continue
+
+    if not frames:
+        return pd.DataFrame()
+
+    return pd.concat(frames, ignore_index=True)
+
+
+def eirox_v813_assinatura_venda_teste():
+    pasta = Path(__file__).resolve().parent / "VENDA_TESTE"
+    try:
+        arquivos = [
+            p for p in (
+                list(pasta.glob("*.xlsx"))
+                + list(pasta.glob("*.xls"))
+                + list(pasta.glob("*.csv"))
+            )
+            if not p.name.startswith("~$")
+        ]
+        return tuple(sorted(
+            (p.name, int(p.stat().st_size), int(p.stat().st_mtime_ns))
+            for p in arquivos
+        ))
+    except Exception:
+        return tuple()
+
+
+def eirox_v813_mapa_pesquisas_reais():
+    """
+    Retorna a base atômica de pesquisa:
+    EAN + preço + loja + Data Emissão real + arquivo.
+    """
+    raw = eirox_v813_ler_venda_teste_raw(
+        eirox_v813_assinatura_venda_teste()
+    )
+
+    cols = [
+        "EAN_V813", "Preco_V813", "Loja_V813",
+        "Loja_Norm_V813", "Data_Emissao_V813", "Arquivo_V813"
+    ]
+    if not isinstance(raw, pd.DataFrame) or raw.empty:
+        return pd.DataFrame(columns=cols)
+
+    ce = _prio_coluna(
+        raw,
+        ["EAN (GTIN)", "EAN", "GTIN", "Código de Barras",
+         "Codigo de Barras", "codigobarras"]
+    )
+    cp = _prio_coluna(
+        raw,
+        ["Preço (R$)", "Preco (R$)", "Preço", "Preco"]
+    )
+    cd = _prio_coluna(
+        raw,
+        ["Data Emissão", "Data Emissao"]
+    )
+    cl = _prio_coluna(
+        raw,
+        ["Farmácia", "Farmacia", "Nome Fantasia", "Loja"]
+    )
+
+    if not ce:
+        return pd.DataFrame(columns=cols)
+
+    out = pd.DataFrame(index=raw.index)
+    out["EAN_V813"] = raw[ce].apply(_prio_normalizar_ean)
+    out["Preco_V813"] = (
+        _num(raw[cp]) if cp else np.nan
+    )
+    out["Loja_V813"] = (
+        raw[cl].fillna("").astype(str).str.strip()
+        if cl else ""
+    )
+    out["Loja_Norm_V813"] = out["Loja_V813"].apply(
+        eirox_v813_normalizar_loja
+    )
+    out["Data_Emissao_V813"] = (
+        _dates(raw[cd]) if cd else pd.NaT
+    )
+    out["Arquivo_V813"] = (
+        raw["__ARQUIVO_V813"].fillna("").astype(str)
+        if "__ARQUIVO_V813" in raw.columns else ""
+    )
+
+    out = out[out["EAN_V813"].str.len().gt(0)].copy()
+    return out[cols].reset_index(drop=True)
+
+
+def eirox_v813_data_e_qtd_por_linha(eans, precos, lojas):
+    """
+    Para cada linha da tabela:
+    1) conta todas as ocorrências do EAN na VENDA_TESTE;
+    2) localiza a Data Emissão da ocorrência do menor preço/loja exibidos;
+    3) se preço+loja não casar, tenta EAN+preço;
+    4) se ainda não casar, usa a última Data Emissão válida do EAN.
+    """
+    pesquisas = eirox_v813_mapa_pesquisas_reais()
+
+    qtds = []
+    datas = []
+    fontes = []
+
+    if pesquisas.empty:
+        return (
+            pd.Series([0] * len(eans), index=eans.index, dtype="int64"),
+            pd.Series([""] * len(eans), index=eans.index, dtype="object"),
+            pd.Series([""] * len(eans), index=eans.index, dtype="object"),
+        )
+
+    for idx in eans.index:
+        ean = _prio_normalizar_ean(eans.loc[idx])
+        sub = pesquisas[pesquisas["EAN_V813"].eq(ean)].copy()
+
+        qtds.append(int(len(sub)))
+
+        if sub.empty:
+            datas.append("")
+            fontes.append("")
+            continue
+
+        sub_valid = sub[sub["Data_Emissao_V813"].notna()].copy()
+        if sub_valid.empty:
+            datas.append("")
+            fontes.append("")
+            continue
+
+        preco_alvo = pd.to_numeric(
+            pd.Series([precos.loc[idx]]), errors="coerce"
+        ).iloc[0]
+        loja_alvo = eirox_v813_normalizar_loja(lojas.loc[idx])
+
+        escolhida = pd.DataFrame()
+
+        # Match exato: EAN + preço + loja.
+        if pd.notna(preco_alvo) and float(preco_alvo) > 0:
+            escolhida = sub_valid[
+                (sub_valid["Preco_V813"] - float(preco_alvo)).abs() < 0.005
+            ].copy()
+
+            if loja_alvo and not escolhida.empty:
+                exata_loja = escolhida[
+                    escolhida["Loja_Norm_V813"].eq(loja_alvo)
+                ].copy()
+                if not exata_loja.empty:
+                    escolhida = exata_loja
+
+        # Se não encontrou o preço, tenta a loja.
+        if escolhida.empty and loja_alvo:
+            escolhida = sub_valid[
+                sub_valid["Loja_Norm_V813"].eq(loja_alvo)
+            ].copy()
+
+        # Último fallback: última pesquisa real do EAN.
+        if escolhida.empty:
+            escolhida = sub_valid.copy()
+
+        escolhida = escolhida.sort_values(
+            "Data_Emissao_V813",
+            ascending=False,
+            kind="stable"
+        )
+
+        row = escolhida.iloc[0]
+        dt = row["Data_Emissao_V813"]
+
+        datas.append(
+            dt.strftime("%d/%m/%Y %H:%M:%S")
+            if pd.notna(dt) else ""
+        )
+        fontes.append(str(row.get("Arquivo_V813", "")))
+
+    return (
+        pd.Series(qtds, index=eans.index, dtype="int64"),
+        pd.Series(datas, index=eans.index, dtype="object"),
+        pd.Series(fontes, index=eans.index, dtype="object"),
+    )
+
+
 def eirox_v288_tabela_prioritarios_padrao_subir(prioridades, dados):
     """
     Tabela da Prioridade de Pesquisa com EXATAMENTE as mesmas colunas
@@ -19547,121 +19785,27 @@ def eirox_v288_tabela_prioritarios_padrao_subir(prioridades, dados):
         .fillna("").astype(str)
     )
 
-    # V8.12 — usa a DATA REAL DA VENDA/PESQUISA da coluna "Data Emissão"
-    # existente nos arquivos da pasta VENDA_TESTE.
-    #
-    # A data é vinculada à mesma ocorrência do Menor Preço Concorrente:
-    # EAN + preço + loja. Se a ocorrência exata não for encontrada, usa a
-    # Data Emissão mais recente válida do EAN como fallback auditável.
-    _hist_v812 = globals().get("historico", pd.DataFrame())
-    _qtd_pesq_v812 = pd.Series(0, index=m.index, dtype="int64")
-    _data_real_v812 = pd.Series("", index=m.index, dtype="object")
-
-    if isinstance(_hist_v812, pd.DataFrame) and not _hist_v812.empty:
-        _ce_v812 = _prio_coluna(
-            _hist_v812,
-            ["EAN (GTIN)", "EAN", "GTIN", "Código de Barras", "Codigo de Barras", "codigobarras"]
-        )
-        _cp_v812 = _prio_coluna(
-            _hist_v812,
-            ["Preço (R$)", "Preco (R$)", "Preço", "Preco"]
-        )
-        _cl_v812 = _prio_coluna(
-            _hist_v812,
-            ["Farmácia", "Farmacia", "Nome Fantasia", "Loja"]
-        )
-        _cd_v812 = _prio_coluna(
-            _hist_v812,
-            ["Data Emissão", "Data Emissao"]
-        )
-
-        if _ce_v812:
-            _h_v812 = _hist_v812.copy()
-            _h_v812["__EAN_V812"] = _h_v812[_ce_v812].apply(_prio_normalizar_ean)
-            _h_v812 = _h_v812[_h_v812["__EAN_V812"].str.len().gt(0)].copy()
-
-            # Quantidade de pesquisas/ocorrências encontradas por EAN.
-            _map_qtd_v812 = _h_v812["__EAN_V812"].value_counts()
-            _qtd_pesq_v812 = m["__EAN_V288"].map(_map_qtd_v812).fillna(0).astype(int)
-
-            if _cd_v812:
-                # O helper _dates já trata strings reais da fonte como:
-                # "Fri Aug 07 13:04:56 AMT 2026".
-                _h_v812["__DATA_REAL_V812"] = _dates(_h_v812[_cd_v812])
-
-                if _cp_v812:
-                    _h_v812["__PRECO_V812"] = _num(_h_v812[_cp_v812])
-                else:
-                    _h_v812["__PRECO_V812"] = np.nan
-
-                if _cl_v812:
-                    _h_v812["__LOJA_V812"] = (
-                        _h_v812[_cl_v812].fillna("").astype(str).str.strip().str.casefold()
-                    )
-                else:
-                    _h_v812["__LOJA_V812"] = ""
-
-                _preco_exibido_v812 = pd.to_numeric(
-                    m.get("Menor Preço Concorrente", pd.Series(np.nan, index=m.index)),
-                    errors="coerce"
-                )
-                _loja_exibida_v812 = (
-                    m.get("Loja do Menor Preço", pd.Series("", index=m.index))
-                    .fillna("").astype(str).str.strip().str.casefold()
-                )
-
-                _datas_resultado_v812 = []
-                for _pos_v812, _idx_v812 in enumerate(m.index):
-                    _ean_alvo_v812 = str(m.at[_idx_v812, "__EAN_V288"])
-                    _sub_v812 = _h_v812[
-                        _h_v812["__EAN_V812"].eq(_ean_alvo_v812)
-                        & _h_v812["__DATA_REAL_V812"].notna()
-                    ].copy()
-
-                    _data_escolhida_v812 = pd.NaT
-                    if not _sub_v812.empty:
-                        _preco_alvo_v812 = _preco_exibido_v812.loc[_idx_v812]
-                        _loja_alvo_v812 = _loja_exibida_v812.loc[_idx_v812]
-
-                        # 1) Mesma ocorrência: EAN + preço + loja.
-                        _match_v812 = _sub_v812.copy()
-                        if pd.notna(_preco_alvo_v812) and _preco_alvo_v812 > 0:
-                            _match_v812 = _match_v812[
-                                (_match_v812["__PRECO_V812"] - float(_preco_alvo_v812)).abs() < 0.005
-                            ]
-                        if _loja_alvo_v812:
-                            _match_loja_v812 = _match_v812[
-                                _match_v812["__LOJA_V812"].eq(_loja_alvo_v812)
-                            ]
-                            if not _match_loja_v812.empty:
-                                _match_v812 = _match_loja_v812
-
-                        if not _match_v812.empty:
-                            _data_escolhida_v812 = _match_v812["__DATA_REAL_V812"].max()
-                        else:
-                            # 2) Fallback: última Data Emissão válida daquele EAN.
-                            _data_escolhida_v812 = _sub_v812["__DATA_REAL_V812"].max()
-
-                    _datas_resultado_v812.append(
-                        _data_escolhida_v812.strftime("%d/%m/%Y %H:%M:%S")
-                        if pd.notna(_data_escolhida_v812)
-                        else ""
-                    )
-
-                _data_real_v812 = pd.Series(_datas_resultado_v812, index=m.index, dtype="object")
-
-    out["Qtd. Pesquisas"] = _qtd_pesq_v812.to_numpy()
-
-    # A coluna exibida passa a ser a Data Emissão REAL do VENDA_TESTE.
-    # Só mantém o valor anterior do motor quando a fonte não trouxe data válida.
-    _data_motor_v812 = out["Data da Pesquisa"].fillna("").astype(str).str.strip()
-    _data_motor_valida_v812 = ~_data_motor_v812.str.lower().isin(
-        {"", "nan", "nat", "none", "sem data na fonte"}
+    # V8.13 — Data Emissão REAL lida diretamente dos arquivos da pasta VENDA_TESTE.
+    # Não depende da variável 'historico' processada.
+    _preco_pesquisa_v813 = pd.to_numeric(
+        m.get("Menor Preço Concorrente", pd.Series(np.nan, index=m.index)),
+        errors="coerce"
     )
-    _data_final_v812 = _data_real_v812.copy()
-    _usar_motor_v812 = _data_final_v812.eq("") & _data_motor_valida_v812
-    _data_final_v812.loc[_usar_motor_v812] = _data_motor_v812.loc[_usar_motor_v812]
-    out["Data da Pesquisa"] = _data_final_v812.to_numpy()
+    _loja_pesquisa_v813 = (
+        m.get("Loja do Menor Preço", pd.Series("", index=m.index))
+        .fillna("").astype(str)
+    )
+
+    _qtd_real_v813, _data_real_v813, _arquivo_real_v813 = (
+        eirox_v813_data_e_qtd_por_linha(
+            m["__EAN_V288"],
+            _preco_pesquisa_v813,
+            _loja_pesquisa_v813,
+        )
+    )
+
+    out["Qtd. Pesquisas"] = _qtd_real_v813.to_numpy()
+    out["Data da Pesquisa"] = _data_real_v813.to_numpy()
 
     out["Preço Sugerido"] = ps.apply(
         lambda x: _eirox_moeda_num(x) if pd.notna(x) and x > 0 else ""
