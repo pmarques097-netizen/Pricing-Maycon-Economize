@@ -8043,7 +8043,7 @@ def eirox_enriquecer_pipeline_municipio(df_pesquisa, compra_base, estoque_base, 
 
 
 # EIROX PRICING 2.0 — FASE 7: NAVEGAÇÃO, FILTROS E EXPORTAÇÃO GLOBAL.
-VERSAO_APP = "Enterprise 2.0 — Fase 8.16 — Média Venda Mês Valor e Unidades"
+VERSAO_APP = "Enterprise 2.0 — Fase 8.17 — Unidades Numéricas"
 
 # --------------------------------------------------
 # FORMATACAO BRASIL
@@ -19042,7 +19042,7 @@ def _prio_resumo_pesquisa(prioridades, dados):
             )
 
             # V8.16 — média/venda do último mês fechado em UNIDADES e VALOR.
-            p["Média Venda/Mês (Unid.)"] = _itens_v814.round(2)
+            p["Média Venda/Mês (Unid.)"] = _itens_v814.round(0).astype("Int64")
             p["Média Venda/Mês (R$)"] = _valor_v816.round(2)
         else:
             p["Média Venda/Mês (Unid.)"] = np.nan
@@ -20119,7 +20119,7 @@ def eirox_render_prioridade_pesquisa(dados_contexto):
             height=520,
             column_config={
                 "Média Venda/Mês (Unid.)": st.column_config.NumberColumn(
-                    "Média Venda/Mês (Unid.)", format="%.2f"
+                    "Média Venda/Mês (Unid.)", format="%d"
                 ),
                 "Média Venda/Mês (R$)": st.column_config.NumberColumn(
                     "Média Venda/Mês (R$)", format="R$ %.2f"
