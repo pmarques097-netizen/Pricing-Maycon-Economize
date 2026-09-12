@@ -697,7 +697,7 @@ from zoneinfo import ZoneInfo
 # NÚCLEO MULTI-CLIENTE + PERFIL CENTRALIZADO
 # ==========================================================
 EIROX_CORE_VERSION = "2.0.8"
-EIROX_CORE_RULESET_ID = "EIROX-CORE-2.0.8-STRICT-PRICE-V7.1"
+EIROX_CORE_RULESET_ID = "EIROX-CORE-2.0.8-STRICT-PRICE-V8.28-LIQUID"
 
 EIROX_CLIENT_PROFILES = {
     "carceres": {
@@ -19557,12 +19557,22 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
     out = eirox_v286_enriquecer_familia_prioritarios(out, dados)
     out["Curva"] = mapcol(["CURVA","Curva"], "")
 
-    # Preço atual — regra estrita V7.1
-    out["Preço Atual"] = pd.to_numeric(
-        mapcol(["Preço_Atual_Eirox","Preco_Atual_Oficial","Preco_Ultima_Venda"]),
-        errors="coerce"
-    )
-    fonte = mapcol(["Fonte_Preço_Eirox","Fonte_Preco_Oficial"], "").fillna("").astype(str)
+    # V8.28 — Preço Atual canônico também na Prioridade de Pesquisa.
+    _mapa_preco_v828 = eirox_v146_preco_principal()
+    if isinstance(_mapa_preco_v828, pd.DataFrame) and not _mapa_preco_v828.empty:
+        _mp_v828 = _mapa_preco_v828.copy()
+        _mp_v828["EAN"] = _ean(_mp_v828["EAN"])
+        _mp_v828 = _mp_v828.drop_duplicates("EAN", keep="last").set_index("EAN")
+        out["Preço Atual"] = pd.to_numeric(
+            keys.map(_mp_v828["Preco_Principal_Final"]), errors="coerce"
+        )
+        fonte = keys.map(_mp_v828["Fonte_Preco_Principal"]).fillna("").astype(str)
+    else:
+        out["Preço Atual"] = pd.to_numeric(
+            mapcol(["Preço_Atual_Eirox","Preco_Atual_Oficial","Preco_Ultima_Venda"]),
+            errors="coerce"
+        )
+        fonte = mapcol(["Fonte_Preço_Eirox","Fonte_Preco_Oficial"], "").fillna("").astype(str)
     out["Fonte Preço Atual"] = fonte.replace({
         "ÚLTIMA VENDA": "ARQUIVO DIÁRIO — TOTAL / QUANTIDADE DA ÚLTIMA VENDA",
         "ÚLTIMO MÊS FECHADO": "VENDA_FINAL_TESTE — ÚLTIMO MÊS FECHADO",
@@ -20077,7 +20087,19 @@ def eirox_v288_tabela_prioritarios_padrao_subir(prioridades, dados):
         default="ℹ️ REVISAR"
     )
 
-    pa = pd.to_numeric(m.get("Preço_Atual_Eirox", np.nan), errors="coerce")
+    # V8.28 — barreira visual canônica na tabela da Prioridade.
+    _mapa_v828 = eirox_v146_preco_principal()
+    if isinstance(_mapa_v828, pd.DataFrame) and not _mapa_v828.empty:
+        _mv828 = _mapa_v828.copy()
+        _mv828["EAN"] = _ean(_mv828["EAN"])
+        _mv828 = _mv828.drop_duplicates("EAN", keep="last").set_index("EAN")
+        pa = pd.to_numeric(
+            m["__EAN_V288"].map(_mv828["Preco_Principal_Final"]),
+            errors="coerce"
+        )
+    else:
+        pa = pd.to_numeric(m.get("Preço_Atual_Eirox", np.nan), errors="coerce")
+
     pref = pd.to_numeric(m.get("Preço_Base_Calculo_Eirox", np.nan), errors="coerce")
     pm = pd.to_numeric(m.get("Preço_Mercado_Eirox", np.nan), errors="coerce")
     ps = pd.to_numeric(m.get("Preço_Sugerido_Eirox", np.nan), errors="coerce")
@@ -20830,6 +20852,83 @@ busca = st.sidebar.text_input(
     "Produto ou EAN",
     key="eirox_v270_filtro_busca",
 )
+
+
+# ==========================================================
+# V8.28 — BARREIRA GLOBAL DO PREÇO ATUAL
+# ==========================================================
+def eirox_v828_overlay_preco_canonico_master(base):
+    """
+    Sobrescreve em memória todos os aliases conhecidos de Preço Atual usando
+    a fonte canônica V8.27. Isto evita que snapshots antigos, enriquecimentos
+    legados ou telas específicas voltem a exibir preço de tabela.
+
+    Não altera arquivos físicos nem bases de origem.
+    """
+    if not isinstance(base, pd.DataFrame) or base.empty:
+        return base
+
+    out = base.copy()
+    ce = _eirox_first_col(out, ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras"])
+    if not ce:
+        return out
+
+    mapa = eirox_v146_preco_principal()
+    if not isinstance(mapa, pd.DataFrame) or mapa.empty:
+        return out
+
+    mp = mapa.copy()
+    mp["EAN"] = _ean(mp["EAN"])
+    mp = mp[mp["EAN"].ne("")].drop_duplicates("EAN", keep="last").set_index("EAN")
+
+    keys = _ean(out[ce])
+    preco = pd.to_numeric(keys.map(mp["Preco_Principal_Final"]), errors="coerce")
+    fonte = keys.map(mp["Fonte_Preco_Principal"]).fillna("SEM PREÇO")
+    data = keys.map(mp["Data_Ultima_Venda"])
+    loja = (
+        keys.map(mp["Loja_Ultima_Venda"])
+        if "Loja_Ultima_Venda" in mp.columns
+        else pd.Series("", index=out.index)
+    )
+    vendaid = (
+        keys.map(mp["VendaID_Ultima_Venda"])
+        if "VendaID_Ultima_Venda" in mp.columns
+        else pd.Series(np.nan, index=out.index)
+    )
+    arquivo = (
+        keys.map(mp["Arquivo_Ultima_Venda"])
+        if "Arquivo_Ultima_Venda" in mp.columns
+        else pd.Series("", index=out.index)
+    )
+
+    # Todos estes campos passam a carregar a MESMA verdade numérica.
+    for coluna in [
+        "Preco_Ultima_Venda",
+        "Preco_Atual",
+        "Preco_Atual_Venda",
+        "Preço Atual",
+        "Preço_Atual",
+        "Preço_Atual_Eirox",
+        "Preco_Atual_Oficial",
+    ]:
+        if coluna in out.columns or coluna in {
+            "Preco_Ultima_Venda", "Preco_Atual", "Preco_Atual_Venda"
+        }:
+            out[coluna] = preco
+
+    out["Data_Ultima_Venda"] = pd.to_datetime(data, errors="coerce")
+    out["Loja_Ultima_Venda"] = loja.fillna("").astype(str)
+    out["VendaID_Ultima_Venda"] = pd.to_numeric(vendaid, errors="coerce")
+    out["Arquivo_Ultima_Venda"] = arquivo.fillna("").astype(str)
+    out["Fonte_Preço_Eirox"] = fonte
+    if "Fonte_Preco_Oficial" in out.columns:
+        out["Fonte_Preco_Oficial"] = fonte
+
+    return out
+
+
+# V8.28 — mesmo preço canônico em TODAS as telas antes de qualquer filtro.
+df = eirox_v828_overlay_preco_canonico_master(df)
 
 # --------------------------------------------------
 # FILTRAR
