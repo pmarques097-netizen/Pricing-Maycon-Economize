@@ -20869,7 +20869,7 @@ def eirox_v828_overlay_preco_canonico_master(base):
         return base
 
     out = base.copy()
-    ce = _eirox_first_col(out, ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras"])
+    ce = _col(out, ["EAN", "EAN (GTIN)", "GTIN", "Código de Barras"])
     if not ce:
         return out
 
