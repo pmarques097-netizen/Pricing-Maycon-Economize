@@ -17,6 +17,8 @@ from performance_engine import (
     curva_abc,
     deduplicar_pesquisa_mercado,
     identificar_rede,
+    ler_arquivo_cacheado,
+    diagnostico_performance,
     limpar_caches_antigos,
     limpar_colunas,
 )
@@ -33,6 +35,8 @@ __all__ = [
     "curva_abc",
     "deduplicar_pesquisa_mercado",
     "identificar_rede",
+    "ler_arquivo_cacheado",
+    "diagnostico_performance",
     "limpar_caches_antigos",
     "limpar_colunas",
 ]

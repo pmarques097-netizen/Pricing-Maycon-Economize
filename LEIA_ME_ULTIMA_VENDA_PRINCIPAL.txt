@@ -1,0 +1,26 @@
+V8.26 — ÚLTIMA VENDA DO PRINCIPAL
+
+PASTA FIXA:
+ULTIMA_VENDA_PRINCIPAL
+
+ARQUIVO FIXO:
+Última venda do sistema.xlsx
+
+ATUALIZAÇÃO DIÁRIA:
+1. Gere/exporte o novo arquivo no sistema.
+2. Substitua o arquivo antigo dentro de ULTIMA_VENDA_PRINCIPAL.
+3. Mantenha exatamente o mesmo nome: Última venda do sistema.xlsx.
+4. Reinicie/atualize o Streamlit.
+
+REGRA DE PREÇO ATUAL:
+1. Última venda do sistema.xlsx:
+   - maior data_ultima_venda por EAN;
+   - usa ultimo_preco_vendido;
+   - guarda loja, vendaid, data e arquivo para auditoria.
+2. Se o EAN não existir no arquivo diário:
+   VENDA_TESTE — última pesquisa válida do Principal.
+3. Se ainda não existir:
+   VENDA_FINAL_TESTE — último mês fechado, Venda / Itens.
+
+O campo preco_tabela do arquivo diário NÃO é usado como Preço Atual.
+As bases VENDA_TESTE, VENDA_FINAL_TESTE, ESTOQUE_TESTE e COMPRA_TESTE não foram alteradas.

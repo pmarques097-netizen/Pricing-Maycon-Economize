@@ -1,0 +1,26 @@
+EIROX PRICING — V8.24 PERFORMANCE FASE 1
+
+Base: Pricing_Carceres_V1_4_35_LIMPO_STREAMLIT.zip
+
+ALTERAÇÕES:
+- Nenhuma alteração em dashboard_pricing.py.
+- Nenhuma alteração nas bases VENDA_TESTE, VENDA_FINAL_TESTE, ESTOQUE_TESTE e COMPRA_TESTE.
+- performance_engine.py passou a usar cache incremental POR ARQUIVO.
+- Quando um novo arquivo entra, os arquivos antigos podem ser reaproveitados do cache.
+- Cache de pasta continua existindo para reruns sem alteração de dados.
+- auditoria_pesquisa_atual reutiliza o mesmo cache de arquivo.
+- O cache usa pickle para preservar tipos/valores do DataFrame sem conversão para Parquet.
+- O cache é técnico e pode ser apagado; as fontes originais continuam sendo os Excel/CSV.
+
+REGRA DE INVALIDAÇÃO:
+- nome/caminho + tamanho + mtime do arquivo;
+- header e opções de leitura.
+Qualquer alteração física invalida apenas o cache daquele arquivo e o agregado da pasta.
+
+VALIDAÇÃO:
+- AST e py_compile dos arquivos Python.
+- Comparação SHA-256 das quatro pastas de dados contra o ZIP mestre.
+- dashboard_pricing.py permanece byte-a-byte idêntico ao ZIP mestre.
+
+Observação:
+AST/py_compile validam sintaxe. A validação final de tempo e paridade de KPIs deve ser feita no Streamlit com as bases reais.

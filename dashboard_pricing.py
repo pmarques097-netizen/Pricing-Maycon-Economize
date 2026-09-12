@@ -322,35 +322,215 @@ def eirox_v146_ultimo_mes_fechado():
 
 
 
+
+# ==========================================================
+# V8.26 — ÚLTIMA VENDA REAL DO PRINCIPAL
+# Fonte diária oficial: ULTIMA_VENDA_PRINCIPAL/Última venda do sistema.xlsx
+# ==========================================================
+def eirox_v826_ultima_venda_sistema():
+    """
+    Retorna a última venda REAL do Principal por EAN.
+
+    Fonte:
+      ULTIMA_VENDA_PRINCIPAL/Última venda do sistema.xlsx
+
+    Regra:
+      - normaliza o EAN;
+      - considera somente data_ultima_venda válida;
+      - calcula Preço Atual líquido = valor_total / quantidade;
+      - ordena por data_ultima_venda e vendaid;
+      - mantém somente a venda mais recente do EAN em toda a rede.
+
+    O arquivo pode ser substituído diariamente mantendo o mesmo nome.
+    O performance_engine invalida automaticamente o cache quando tamanho
+    ou data de modificação do arquivo mudar.
+    """
+    vazio = pd.DataFrame(columns=[
+        "EAN",
+        "Preco_Ultima_Venda_Sistema",
+        "Preco_Tabela_Ultima_Venda_Sistema",
+        "Valor_Total_Ultima_Venda_Sistema",
+        "Quantidade_Ultima_Venda_Sistema",
+        "Data_Ultima_Venda_Sistema",
+        "Loja_Ultima_Venda_Sistema",
+        "VendaID_Ultima_Venda_Sistema",
+        "Arquivo_Ultima_Venda_Sistema",
+    ])
+
+    caminho = (
+        Path(__file__).resolve().parent
+        / "ULTIMA_VENDA_PRINCIPAL"
+        / "Última venda do sistema.xlsx"
+    )
+
+    if not caminho.exists():
+        return vazio
+
+    try:
+        from performance_engine import ler_arquivo_cacheado
+        base = ler_arquivo_cacheado(caminho, header=0)
+    except Exception:
+        try:
+            base = pd.read_excel(caminho, sheet_name="Export")
+        except Exception:
+            return vazio
+
+    if not isinstance(base, pd.DataFrame) or base.empty:
+        return vazio
+
+    d = base.copy()
+
+    c_ean = _col(d, ["ean", "EAN", "EAN (GTIN)", "GTIN", "codigobarras"])
+    c_data = _col(d, ["data_ultima_venda", "Data Última Venda", "Data_Ultima_Venda"])
+    c_preco = _col(d, ["ultimo_preco_vendido", "Último Preço Vendido", "Preco_Ultima_Venda"])
+    c_preco_tabela = _col(d, ["preco_tabela", "Preço Tabela", "Preco_Tabela"])
+    c_qtd = _col(d, ["quantidade", "Quantidade", "Qtd", "Qtd."])
+    c_total = _col(d, ["valor_total", "Valor Total", "Total", "Valor_Total"])
+    c_loja = _col(d, ["loja", "Loja"])
+    c_vendaid = _col(d, ["vendaid", "VendaID", "Venda ID"])
+
+    if c_ean is None or c_data is None:
+        return vazio
+
+    d["EAN"] = _ean(d[c_ean])
+
+    # V8.27 — PREÇO ATUAL REAL/LÍQUIDO
+    # A7: Preço Atual = Total efetivamente vendido / Quantidade.
+    # Ex.: Total 70,00 / Qtd 2 = 35,00.
+    qtd_v827 = _num(d[c_qtd]) if c_qtd else pd.Series(np.nan, index=d.index)
+    total_v827 = _num(d[c_total]) if c_total else pd.Series(np.nan, index=d.index)
+    preco_liquido_v827 = total_v827 / qtd_v827.replace(0, np.nan)
+
+    # ultimo_preco_vendido fica apenas como fallback técnico quando o arquivo
+    # não trouxer Total/Quantidade válidos. preco_tabela nunca vira Preço Atual.
+    preco_exportado_v827 = (
+        _num(d[c_preco]) if c_preco else pd.Series(np.nan, index=d.index)
+    )
+    preco_final_v827 = preco_liquido_v827.where(
+        preco_liquido_v827.notna() & preco_liquido_v827.gt(0),
+        preco_exportado_v827,
+    )
+
+    d["Preco_Ultima_Venda_Sistema"] = preco_final_v827
+    d["Preco_Tabela_Ultima_Venda_Sistema"] = (
+        _num(d[c_preco_tabela]) if c_preco_tabela else np.nan
+    )
+    d["Valor_Total_Ultima_Venda_Sistema"] = total_v827
+    d["Quantidade_Ultima_Venda_Sistema"] = qtd_v827
+    d["Data_Ultima_Venda_Sistema"] = pd.to_datetime(
+        d[c_data], errors="coerce", dayfirst=True
+    )
+    d["Loja_Ultima_Venda_Sistema"] = (
+        d[c_loja].fillna("").astype(str) if c_loja else ""
+    )
+    d["VendaID_Ultima_Venda_Sistema"] = (
+        pd.to_numeric(d[c_vendaid], errors="coerce") if c_vendaid else np.nan
+    )
+    d["Arquivo_Ultima_Venda_Sistema"] = caminho.name
+
+    d = d[
+        d["EAN"].ne("")
+        & d["Data_Ultima_Venda_Sistema"].notna()
+        & d["Preco_Ultima_Venda_Sistema"].notna()
+        & d["Preco_Ultima_Venda_Sistema"].gt(0)
+    ].copy()
+
+    if d.empty:
+        return vazio
+
+    d["_ordem_v826"] = np.arange(len(d))
+    d = d.sort_values(
+        [
+            "EAN",
+            "Data_Ultima_Venda_Sistema",
+            "VendaID_Ultima_Venda_Sistema",
+            "_ordem_v826",
+        ],
+        ascending=[True, True, True, True],
+        kind="stable",
+        na_position="first",
+    )
+    d = d.groupby("EAN", sort=False).tail(1)
+
+    return d[vazio.columns].reset_index(drop=True)
+
+
 def eirox_v146_preco_principal():
     """
-    Prioridade:
-      1) VENDA_TESTE: última Data Emissão do Principal por EAN.
-      2) Se o EAN não existir ali: VENDA_FINAL_TESTE, último mês fechado,
+    V8.26 — hierarquia oficial do Preço Atual do Principal:
+
+      1) ULTIMA_VENDA_PRINCIPAL/Última venda do sistema.xlsx
+         -> maior data_ultima_venda por EAN
+         -> usa valor_total / quantidade da venda mais recente;
+
+      2) se o EAN não existir no arquivo diário:
+         VENDA_TESTE -> última Data Emissão válida do Principal;
+
+      3) se ainda não existir:
+         VENDA_FINAL_TESTE -> último mês fechado com venda válida,
          Preço de Venda = Venda / Itens.
+
+    Nenhuma dessas fontes altera as bases originais.
     """
+    sistema = eirox_v826_ultima_venda_sistema()
     pesquisa = eirox_v143_ultima_pesquisa()
     fechado = eirox_v146_ultimo_mes_fechado()
 
     eans = set()
-    if isinstance(pesquisa, pd.DataFrame) and not pesquisa.empty:
-        eans.update(pesquisa["EAN"].astype(str))
-    if isinstance(fechado, pd.DataFrame) and not fechado.empty:
-        eans.update(fechado["EAN"].astype(str))
+    for fonte_df in (sistema, pesquisa, fechado):
+        if isinstance(fonte_df, pd.DataFrame) and not fonte_df.empty and "EAN" in fonte_df.columns:
+            eans.update(fonte_df["EAN"].astype(str))
+
     if not eans:
         return pd.DataFrame(columns=[
-            "EAN","Preco_Principal_Final","Fonte_Preco_Principal",
-            "Data_Ultima_Venda","Mes_Fechado_Referencia"
+            "EAN",
+            "Preco_Principal_Final",
+            "Fonte_Preco_Principal",
+            "Data_Ultima_Venda",
+            "Loja_Ultima_Venda",
+            "VendaID_Ultima_Venda",
+            "Arquivo_Ultima_Venda",
+            "Mes_Fechado_Referencia",
         ])
 
     out = pd.DataFrame({"EAN": sorted(eans)})
+
+    # 1) Arquivo diário oficial.
+    if isinstance(sistema, pd.DataFrame) and not sistema.empty:
+        s = sistema.drop_duplicates("EAN", keep="last").copy()
+        out = out.merge(s, on="EAN", how="left")
+    else:
+        out["Preco_Ultima_Venda_Sistema"] = np.nan
+        out["Data_Ultima_Venda_Sistema"] = pd.NaT
+        out["Loja_Ultima_Venda_Sistema"] = ""
+        out["VendaID_Ultima_Venda_Sistema"] = np.nan
+        out["Arquivo_Ultima_Venda_Sistema"] = ""
+
+    # 2) Pesquisa do Principal, apenas fallback.
     if isinstance(pesquisa, pd.DataFrame) and not pesquisa.empty:
-        p = pesquisa[["EAN","Preco_Ultima_Venda","Data_Ultima_Venda"]].drop_duplicates("EAN", keep="last")
+        p = pesquisa[
+            [
+                "EAN",
+                "Preco_Ultima_Venda",
+                "Data_Ultima_Venda",
+                "Loja_Ultima_Venda",
+                "Arquivo_Ultima_Venda",
+            ]
+        ].drop_duplicates("EAN", keep="last").copy()
+        p = p.rename(columns={
+            "Preco_Ultima_Venda": "Preco_Fallback_Pesquisa_Principal",
+            "Data_Ultima_Venda": "Data_Fallback_Pesquisa_Principal",
+            "Loja_Ultima_Venda": "Loja_Fallback_Pesquisa_Principal",
+            "Arquivo_Ultima_Venda": "Arquivo_Fallback_Pesquisa_Principal",
+        })
         out = out.merge(p, on="EAN", how="left")
     else:
-        out["Preco_Ultima_Venda"] = np.nan
-        out["Data_Ultima_Venda"] = pd.NaT
+        out["Preco_Fallback_Pesquisa_Principal"] = np.nan
+        out["Data_Fallback_Pesquisa_Principal"] = pd.NaT
+        out["Loja_Fallback_Pesquisa_Principal"] = ""
+        out["Arquivo_Fallback_Pesquisa_Principal"] = ""
 
+    # 3) Último mês fechado.
     if isinstance(fechado, pd.DataFrame) and not fechado.empty:
         f = fechado.drop_duplicates("EAN", keep="last")
         out = out.merge(f, on="EAN", how="left")
@@ -358,23 +538,86 @@ def eirox_v146_preco_principal():
         out["Preco_Fallback_Mes_Fechado"] = np.nan
         out["Mes_Fechado_Referencia"] = ""
 
-    real = pd.to_numeric(out["Preco_Ultima_Venda"], errors="coerce")
-    fb = pd.to_numeric(out["Preco_Fallback_Mes_Fechado"], errors="coerce")
-    out["Preco_Principal_Final"] = real.where(real.notna() & real.gt(0), fb)
-    out["Fonte_Preco_Principal"] = np.where(
-        real.notna() & real.gt(0),
-        "ÚLTIMA VENDA",
-        np.where(fb.notna() & fb.gt(0), "ÚLTIMO MÊS FECHADO", "SEM PREÇO")
+    ps = pd.to_numeric(out["Preco_Ultima_Venda_Sistema"], errors="coerce")
+    pp = pd.to_numeric(out["Preco_Fallback_Pesquisa_Principal"], errors="coerce")
+    pf = pd.to_numeric(out["Preco_Fallback_Mes_Fechado"], errors="coerce")
+
+    usa_sistema = ps.notna() & ps.gt(0)
+    usa_pesquisa = (~usa_sistema) & pp.notna() & pp.gt(0)
+    usa_fechado = (~usa_sistema) & (~usa_pesquisa) & pf.notna() & pf.gt(0)
+
+    out["Preco_Principal_Final"] = np.select(
+        [usa_sistema, usa_pesquisa, usa_fechado],
+        [ps, pp, pf],
+        default=np.nan,
     )
+
+    # Mantém o rótulo "ÚLTIMA VENDA" para compatibilidade com telas e relatórios.
+    # A origem detalhada fica em Fonte_Detalhada_Preco_Principal.
+    out["Fonte_Preco_Principal"] = np.select(
+        [usa_sistema, usa_pesquisa, usa_fechado],
+        ["ÚLTIMA VENDA", "ÚLTIMA VENDA", "ÚLTIMO MÊS FECHADO"],
+        default="SEM PREÇO",
+    )
+
+    out["Fonte_Detalhada_Preco_Principal"] = np.select(
+        [usa_sistema, usa_pesquisa, usa_fechado],
+        [
+            "ARQUIVO DIÁRIO — TOTAL / QUANTIDADE DA ÚLTIMA VENDA",
+            "VENDA_TESTE — ÚLTIMA PESQUISA PRINCIPAL",
+            "VENDA_FINAL_TESTE — ÚLTIMO MÊS FECHADO",
+        ],
+        default="SEM PREÇO",
+    )
+
+    out["Data_Ultima_Venda"] = pd.to_datetime(
+        out["Data_Ultima_Venda_Sistema"], errors="coerce"
+    )
+    out.loc[usa_pesquisa, "Data_Ultima_Venda"] = pd.to_datetime(
+        out.loc[usa_pesquisa, "Data_Fallback_Pesquisa_Principal"],
+        errors="coerce",
+    )
+
+    out["Loja_Ultima_Venda"] = ""
+    out.loc[usa_sistema, "Loja_Ultima_Venda"] = (
+        out.loc[usa_sistema, "Loja_Ultima_Venda_Sistema"]
+        .fillna("")
+        .astype(str)
+    )
+    out.loc[usa_pesquisa, "Loja_Ultima_Venda"] = (
+        out.loc[usa_pesquisa, "Loja_Fallback_Pesquisa_Principal"]
+        .fillna("")
+        .astype(str)
+    )
+
+    out["VendaID_Ultima_Venda"] = np.where(
+        usa_sistema,
+        out["VendaID_Ultima_Venda_Sistema"],
+        np.nan,
+    )
+
+    out["Arquivo_Ultima_Venda"] = ""
+    out.loc[usa_sistema, "Arquivo_Ultima_Venda"] = (
+        out.loc[usa_sistema, "Arquivo_Ultima_Venda_Sistema"]
+        .fillna("")
+        .astype(str)
+    )
+    out.loc[usa_pesquisa, "Arquivo_Ultima_Venda"] = (
+        out.loc[usa_pesquisa, "Arquivo_Fallback_Pesquisa_Principal"]
+        .fillna("")
+        .astype(str)
+    )
+
     return out
 
 
 
 def eirox_v143_aplicar_preco(base):
     """
-    V1.4.47 — Preço Atual:
-    1) VENDA_TESTE pela última Data Emissão do Principal;
-    2) se não houver EAN, VENDA_FINAL_TESTE do último mês fechado,
+    V8.26 — Preço Atual:
+    1) arquivo diário "Última venda do sistema.xlsx", pela venda real mais recente;
+    2) se não houver EAN, VENDA_TESTE pela última Data Emissão do Principal;
+    3) se ainda não houver, VENDA_FINAL_TESTE do último mês fechado,
        calculando Venda / Itens.
     """
     if not isinstance(base, pd.DataFrame) or base.empty:
@@ -393,11 +636,19 @@ def eirox_v143_aplicar_preco(base):
         fonte = keys.map(lk["Fonte_Preco_Principal"])
         data = keys.map(lk["Data_Ultima_Venda"])
         mes = keys.map(lk["Mes_Fechado_Referencia"])
+        loja = keys.map(lk["Loja_Ultima_Venda"]) if "Loja_Ultima_Venda" in lk.columns else pd.Series("", index=d.index)
+        vendaid = keys.map(lk["VendaID_Ultima_Venda"]) if "VendaID_Ultima_Venda" in lk.columns else pd.Series(np.nan, index=d.index)
+        arquivo_uv = keys.map(lk["Arquivo_Ultima_Venda"]) if "Arquivo_Ultima_Venda" in lk.columns else pd.Series("", index=d.index)
+        fonte_detalhada = keys.map(lk["Fonte_Detalhada_Preco_Principal"]) if "Fonte_Detalhada_Preco_Principal" in lk.columns else fonte
     else:
         final = pd.Series(np.nan,index=d.index,dtype="float64")
         fonte = pd.Series("SEM PREÇO",index=d.index,dtype="object")
         data = pd.Series(pd.NaT,index=d.index)
         mes = pd.Series("",index=d.index,dtype="object")
+        loja = pd.Series("",index=d.index,dtype="object")
+        vendaid = pd.Series(np.nan,index=d.index,dtype="float64")
+        arquivo_uv = pd.Series("",index=d.index,dtype="object")
+        fonte_detalhada = pd.Series("SEM PREÇO",index=d.index,dtype="object")
 
     # Mantém referência anterior separada para auditoria/cálculos.
     ref = pd.Series(np.nan, index=d.index, dtype="float64")
@@ -414,7 +665,11 @@ def eirox_v143_aplicar_preco(base):
     d["Preco_Ultima_Venda"] = pd.to_numeric(final, errors="coerce")
     d["Data_Ultima_Venda"] = data
     d["Mes_Fechado_Referencia"] = mes
+    d["Loja_Ultima_Venda"] = loja.fillna("").astype(str)
+    d["VendaID_Ultima_Venda"] = pd.to_numeric(vendaid, errors="coerce")
+    d["Arquivo_Ultima_Venda"] = arquivo_uv.fillna("").astype(str)
     d["Fonte_Preço_Eirox"] = fonte.fillna("SEM PREÇO")
+    d["Fonte_Detalhada_Preço_Eirox"] = fonte_detalhada.fillna("SEM PREÇO")
     return d
 
 
@@ -19309,7 +19564,7 @@ def eirox_v282_analise_prioritarios(prioridades, dados):
     )
     fonte = mapcol(["Fonte_Preço_Eirox","Fonte_Preco_Oficial"], "").fillna("").astype(str)
     out["Fonte Preço Atual"] = fonte.replace({
-        "ÚLTIMA VENDA": "VENDA_TESTE — ÚLTIMA PESQUISA PRINCIPAL",
+        "ÚLTIMA VENDA": "ARQUIVO DIÁRIO — TOTAL / QUANTIDADE DA ÚLTIMA VENDA",
         "ÚLTIMO MÊS FECHADO": "VENDA_FINAL_TESTE — ÚLTIMO MÊS FECHADO",
     })
 
@@ -23553,7 +23808,7 @@ def eirox_v147_corrigir_lista_subir_final(tab):
 
 
 
-    # V1.4.49 — barreira visual final com prioridade VENDA_TESTE e
+    # V8.26 — barreira visual final com prioridade no arquivo diário e
     # fallback VENDA_FINAL_TESTE do último mês fechado (Venda / Itens).
     try:
         _mapa = eirox_v146_preco_principal()
@@ -23602,9 +23857,10 @@ def eirox_v147_corrigir_lista_subir_final(tab):
 # EIROX PRICING 2.0 — V7.1
 # BARREIRA FINAL DO PREÇO ATUAL
 # ==========================================================
-# O Preço Atual pode ter somente duas origens:
-# 1) VENDA_TESTE — última pesquisa válida do CNPJ Principal;
-# 2) VENDA_FINAL_TESTE — Venda / Itens do último mês fechado com venda.
+# O Preço Atual possui a hierarquia V8.26:
+# 1) arquivo diário — última venda real do sistema;
+# 2) VENDA_TESTE — última pesquisa válida do CNPJ Principal;
+# 3) VENDA_FINAL_TESTE — Venda / Itens do último mês fechado com venda.
 # Sem uma dessas origens, o produto fica SEM PREÇO.
 _eirox_v147_legacy_corrigir_lista_subir_final = eirox_v147_corrigir_lista_subir_final
 
@@ -23662,7 +23918,7 @@ def eirox_v271_aplicar_preco_canonico_tabela(tab):
         ]
 
     out["Fonte Preço Atual"] = fonte.map({
-        "ÚLTIMA VENDA": "VENDA_TESTE — ÚLTIMA PESQUISA PRINCIPAL",
+        "ÚLTIMA VENDA": "ARQUIVO DIÁRIO — TOTAL / QUANTIDADE DA ÚLTIMA VENDA",
         "ÚLTIMO MÊS FECHADO": "VENDA_FINAL_TESTE — ÚLTIMO MÊS FECHADO",
         "SEM PREÇO": "SEM PREÇO",
     }).fillna("SEM PREÇO")

@@ -1,0 +1,5 @@
+V8.25 — BASE E LEITURA ÚNICAS
+Cáceres e Intedados possuem cópias idênticas das quatro bases originais enviadas.
+Também usam byte-a-byte o mesmo performance_engine.py e pricing_utils.py.
+O cache técnico inicia vazio e será reconstruído das mesmas fontes.
+A diferença do Intedados fica no dashboard/branding.
